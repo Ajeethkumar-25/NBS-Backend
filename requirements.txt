@@ -1,0 +1,13 @@
+boto3 
+botocore 
+bcrypt==4.0.1
+ 
+fastapi[all] 
+passlib 
+psycopg2-binary 
+pyjwt 
+python-jose 
+firebase-admin 
+googletrans==4.0.0-rc1 
+twilio 
+python-dotenv
