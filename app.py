@@ -410,10 +410,10 @@ class CompatibilityRequest(BaseModel):
 
 class S3Handler:
     def __init__(self):
-        self.aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
-        self.aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-        self.region = "ap-south-1"
-        self.bucket_name = "nbs-matrimonybucket1"
+        self.aws_access_key = os.getenv("aws_access_key")
+        self.aws_secret_key = os.getenv("aws_secret_key")
+        self.region = os.getenv("region")
+        self.bucket_name = os.getenv("bucket_name")
 
         self.s3_client = boto3.client(
             's3',
