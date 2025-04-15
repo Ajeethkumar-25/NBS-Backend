@@ -82,9 +82,9 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Serve static files from the "uploads" directory
-app.mount("/static", StaticFiles(directory=r"C:\Users\Premalatha\Desktop\NBS-Backend\uploads"), name="static") #/home/ubuntu/uploads | C:\Users\Premalatha\Desktop\NBS-Backend\uploads
-app.mount("/static/photos", StaticFiles(directory=r"C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_photos"), name="static") #/home/ubuntu/myapp/uploaded_photos | C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_photos
-app.mount("/static/horoscopes", StaticFiles(directory=r"C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_horoscopes"), name="static_horoscopes") #/home/ubuntu/myapp/uploaded_horoscopes | C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_horoscopes
+app.mount("/static", StaticFiles(directory=r"/home/ubuntu/uploads"), name="static") #/home/ubuntu/uploads | C:\Users\Premalatha\Desktop\NBS-Backend\uploads
+app.mount("/static/photos", StaticFiles(directory=r"/home/ubuntu/myapp/uploaded_photos"), name="static") #/home/ubuntu/myapp/uploaded_photos | C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_photos
+app.mount("/static/horoscopes", StaticFiles(directory=r"/home/ubuntu/myapp/uploaded_horoscopes"), name="static_horoscopes") #/home/ubuntu/myapp/uploaded_horoscopes | C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_horoscopes
 
 # CORS middleware configuration
 app.add_middleware(
@@ -129,7 +129,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # Initialize Firebase
-cred = credentials.Certificate(r"C:/Users/Premalatha/Desktop/NBS-Backend/myapp/cred/firebase.json")  # /home/ubuntu/myapp/cred/firebase.json | C:/Users/Premalatha/Desktop/NBS-Backend/myapp/cred/firebase.json
+cred = credentials.Certificate(r"/home/ubuntu/myapp/cred/firebase.json")  # /home/ubuntu/myapp/cred/firebase.json | C:/Users/Premalatha/Desktop/NBS-Backend/myapp/cred/firebase.json
 firebase_admin.initialize_app(cred)
 
 
