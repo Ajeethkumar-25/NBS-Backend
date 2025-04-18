@@ -82,9 +82,9 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Serve static files from the "uploads" directory
-app.mount("/static", StaticFiles(directory=r"/home/ubuntu/uploads"), name="static") #/home/ubuntu/uploads | C:\Users\Premalatha\Desktop\NBS-Backend\uploads
-app.mount("/static/photos", StaticFiles(directory=r"/home/ubuntu/myapp/uploaded_photos"), name="static") #/home/ubuntu/myapp/uploaded_photos | C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_photos
-app.mount("/static/horoscopes", StaticFiles(directory=r"/home/ubuntu/myapp/uploaded_horoscopes"), name="static_horoscopes") #/home/ubuntu/myapp/uploaded_horoscopes | C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_horoscopes
+app.mount("/static", StaticFiles(directory=r"C:\Users\Premalatha\Desktop\NBS-Backend\uploads"), name="static") #/home/ubuntu/uploads | C:\Users\Premalatha\Desktop\NBS-Backend\uploads
+app.mount("/static/photos", StaticFiles(directory=r"C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_horoscopes"), name="static") #/home/ubuntu/myapp/uploaded_photos | C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_photos
+app.mount("/static/horoscopes", StaticFiles(directory=r"C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_horoscopes"), name="static_horoscopes") #/home/ubuntu/myapp/uploaded_horoscopes | C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_horoscopes
 
 # CORS middleware configuration
 app.add_middleware(
@@ -94,8 +94,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+load_dotenv(dotenv_path=Path(".env"), encoding="utf-8-sig")
 
-load_dotenv()
 # Configuration
 class Settings:
     PROJECT_NAME = "Photo Studio & Matrimony API"
@@ -129,7 +129,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # Initialize Firebase
-cred = credentials.Certificate(r"/home/ubuntu/myapp/cred/firebase.json")  # /home/ubuntu/myapp/cred/firebase.json | C:/Users/Premalatha/Desktop/NBS-Backend/myapp/cred/firebase.json
+cred = credentials.Certificate(r"C:/Users/Premalatha/Desktop/NBS-Backend/myapp/cred/firebase.json")  # /home/ubuntu/myapp/cred/firebase.json | C:/Users/Premalatha/Desktop/NBS-Backend/myapp/cred/firebase.json
 firebase_admin.initialize_app(cred)
 
 
@@ -192,6 +192,10 @@ class FileResponse(BaseModel):
 
 class FileUploadRequest(BaseModel):
     category: str
+
+class FileSelectionRequest(BaseModel):
+    selected_filenames: List[str]
+
 
 class MatrimonyProfile(BaseModel):
     full_name: str
@@ -714,11 +718,9 @@ def generate_matrimony_id():
 # Helper functions to save files
 # Allowed file types and max file size
 ALLOWED_FILE_TYPES = {
-    "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
-    "video/mp4", "video/mpeg", "video/quicktime", "video/x-msvideo",
-    "application/pdf"
+    "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"
 }
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_FILE_SIZE = 1000 * 1024 * 1024  # 1000 MB
 
 def validate_file(file: UploadFile):
     """Validate file type and size before saving"""
@@ -2258,7 +2260,7 @@ async def refresh_token(token: RefreshToken):
         cur.close()
         conn.close()
 
-# Photo_File_upload - post (Photo, video, pdf, File_size upto 100 MB)
+# Photo_File_upload - post (Photo, video, pdf, File_size upto 1000 MB)
 @app.post("/photostudio/admin/private/fileupload", response_model=Dict[str, Any])
 async def admin_upload_files(
     files: List[UploadFile] = File(...),
@@ -2335,6 +2337,7 @@ async def admin_upload_files(
                         "file_type": file_type,
                         "uploaded_by": current_user["id"],
                         "file_url": file_url
+
                     }
                 })
 
@@ -2527,6 +2530,95 @@ async def delete_uploaded_file(
         conn.rollback()
         print(f"[ERROR] Exception occurred: {e}")
         raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
+
+    finally:
+        cur.close()
+        conn.close()
+
+# User File Selectin from the Admin Uploaded files
+@app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
+async def user_select_files(
+    request: FileSelectionRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    if current_user.get("user_type") != "user":
+        raise HTTPException(status_code=403, detail="Only users can access this endpoint")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    selected = request.selected_filenames
+    updated_files = []
+
+    try:
+        for filename in selected:
+            cur.execute(
+                """
+                UPDATE private_files
+                SET user_selected_files = 
+                    CASE 
+                        WHEN user_selected_files IS NULL THEN ARRAY[%s]
+                        ELSE array_append(user_selected_files, %s)
+                    END
+                WHERE filename = %s
+                RETURNING private_files_id;
+                """,
+                (str(current_user["id"]), str(current_user["id"]), filename)
+            )
+            result = cur.fetchone()
+            if result:
+                updated_files.append(filename)
+
+        conn.commit()
+
+        return {
+            "message": "Your selected photos have been saved.",
+            "selected_files": updated_files,
+            "user_id": current_user["id"]
+        }
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Error updating selections: {e}")
+        raise HTTPException(status_code=500, detail="Something went wrong while saving your selection.")
+
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/photostudio/user/private/get-selected-files", response_model=Dict[str, Any])
+async def get_user_selected_files(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    if current_user.get("user_type") != "user":
+        raise HTTPException(status_code=403, detail="Only users can access this endpoint")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            SELECT filename, file_type, file_url
+            FROM private_files
+            WHERE %s = ANY(user_selected_files)
+        """, (str(current_user["id"]),))
+        rows = cur.fetchall()
+
+        selected_files = [
+            {
+                "filename": row[0],
+                "file_type": row[1],
+                "file_url": row[2]
+            }
+            for row in rows
+        ]
+
+        return {
+            "user_id": current_user["id"],
+            "selected_files": selected_files
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching selected files: {str(e)}")
 
     finally:
         cur.close()
