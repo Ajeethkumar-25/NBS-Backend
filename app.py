@@ -2506,6 +2506,7 @@ async def update_uploaded_file(
     except Exception as e:
         conn.rollback()
         print(f"[ERROR] Exception occurred during file update: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
 
 
@@ -2597,6 +2598,7 @@ async def delete_uploaded_file(
     except Exception as e:
         conn.rollback()
         print(f"[ERROR] Exception occurred: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
 
     finally:
