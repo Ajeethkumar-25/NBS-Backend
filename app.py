@@ -2505,7 +2505,9 @@ async def update_uploaded_file(
 
     except Exception as e:
         conn.rollback()
+        print(f"[ERROR] Exception occurred during file update: {e}")
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
 
     finally:
         cur.close()
