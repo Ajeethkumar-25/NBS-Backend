@@ -2618,7 +2618,6 @@ async def delete_uploaded_file(
 @app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
 async def user_select_files(
     request: FileSelectionRequest,
-    category: str = Form(...),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
