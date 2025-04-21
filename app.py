@@ -2289,105 +2289,82 @@ async def admin_upload_files(
     s3_handler = S3Handler()
     conn = get_db_connection()
     cur = conn.cursor()
-    
+
     try:
-        # First, get existing records for this user
+        # Check if a private_files record already exists
         cur.execute(
-            """
-            SELECT private_files_id, file_url
-            FROM private_files
-            WHERE uploaded_by = %s  AND category = %s
-            """,
+            "SELECT private_files_id FROM private_files WHERE uploaded_by = %s AND category = %s",
             (current_user["id"], category)
         )
-        existing = cur.fetchone()
-        
-        # Initialize variables
-        private_file_id = None
-        all_file_urls = []
-        
-        # If record exists, get its ID and URLs
-        if existing:
-            private_file_id, all_file_urls = existing
-        
-        # Upload all files to S3 first
-        new_file_urls = []
+        result = cur.fetchone()
+
+        if result:
+            private_files_id = result[0]
+        else:
+            # Create new private_files record
+            cur.execute(
+                "INSERT INTO private_files (uploaded_by, category) VALUES (%s, %s) RETURNING private_files_id",
+                (current_user["id"], category)
+            )
+            private_files_id = cur.fetchone()[0]
+
+        uploaded_file_info = []
+
         for file in files:
             try:
-                # Upload file to S3
                 file_url = s3_handler.upload_to_s3(file, "admin_files")
-                if file_url:
-                    new_file_urls.append(file_url)
-                else:
-                    print(f"Skipping {file.filename} - S3 upload failed")
+                if not file_url:
+                    print(f"Skipping {file.filename} - upload failed")
+                    continue
+
+                file_type = file.content_type
+
+                # Insert into private_files_url
+                cur.execute(
+                    """
+                    INSERT INTO private_files_url (private_files_id, file_type, file_url, uploaded_at)
+                    VALUES (%s, %s, %s, NOW())
+                    RETURNING id, file_url, file_type, uploaded_at
+                    """,
+                    (private_files_id, file_type, file_url)
+                )
+                uploaded = cur.fetchone()
+                uploaded_file_info.append({
+                    "url": uploaded[1],
+                    "file_type": uploaded[2],
+                    "uploaded_at": uploaded[3]
+                })
+
             except Exception as e:
                 print(f"S3 Upload Error for {file.filename}: {e}")
         
-        # If we have any successful uploads
-        if new_file_urls:
-            # Combine existing URLs with new ones
-            updated_urls = all_file_urls + new_file_urls
-            
-            if existing:
-                # Update existing record
-                cur.execute(
-                    """
-                    UPDATE private_files
-                    SET file_url = %s
-                    WHERE private_files_id = %s
-                    RETURNING private_files_id, file_type
-                    """,
-                    (updated_urls, private_file_id)
-                )
-                private_file_id, file_type = cur.fetchone()
-            else:
-                # Create new record if none exists
-                file_type = files[0].content_type  # Use the first file's type
-                cur.execute(
-                    """
-                    INSERT INTO private_files (file_type, file_url, uploaded_by, uploaded_at, category)
-                    VALUES (%s, %s, %s, NOW(), %s)
-                    RETURNING private_files_id, file_type;
-                    """,
-                    (file_type, updated_urls, current_user["id"], category)
-                )
-                private_file_id, file_type = cur.fetchone()
-            
-            conn.commit()
-            
-            # Prepare single response object
-            response = {
-                "message": "Files uploaded successfully by admin",
-                "uploaded_files": [{
-                    "id": private_file_id,
-                    "File Details": {
-                        "file_type": file_type,
-                        "uploaded_by": current_user["id"],
-                        "category": category,
-                        "file_urls": updated_urls
-                    }
-                }]
-            }
-            
-            return response
-        else:
-            raise HTTPException(status_code=500, detail="No files were uploaded successfully")
-            
+        if not uploaded_file_info:
+            raise HTTPException(status_code=400, detail="No files were uploaded successfully")
+
+        conn.commit()
+
+        return {
+            "message": "Files uploaded successfully by admin",
+            "private_files_id": private_files_id,
+            "uploaded_by": current_user["id"],
+            "category": category,
+            "uploaded_files": uploaded_file_info
+        }
+
     except Exception as e:
         conn.rollback()
-        print(f"Unexpected Error: {str(e)}")
+        print(f"[ERROR] {str(e)}")
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-    
+
     finally:
         cur.close()
         conn.close()
 
+
 # Get Endpoint for file Upload
-@app.get("/photostudio/admin/private/get_files", response_model=List[Dict[str, Any]])
-def get_uploaded_files(
-    file_id: Optional[int] = None,
-    filename: Optional[str] = None,
-    category: Optional[str] = None,
+@app.get("/photostudio/admin/private/get_files", response_model=Dict[str, Any])
+async def get_user_uploaded_files(
+    category: str = Query(...),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2395,44 +2372,53 @@ def get_uploaded_files(
 
     conn = get_db_connection()
     cur = conn.cursor()
-    
+
     try:
-        query = """
-            SELECT private_files_id, file_type, file_url, uploaded_by, uploaded_at, category
-            FROM private_files
-            WHERE uploaded_by = %s
-        """
-        params = [current_user["id"]]
+        # Get private_files_id for the user and category
+        cur.execute(
+            "SELECT private_files_id FROM private_files WHERE uploaded_by = %s AND category = %s",
+            (current_user["id"], category)
+        )
+        result = cur.fetchone()
 
-        if file_id:
-            query += " AND private_files_id = %s"
-            params.append(file_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="No files found for this category")
 
-        if category:
-            query += " AND category = %s"
-            params.append(category)
+        private_files_id = result[0]
 
-        # Removed filename filter since we're not storing filenames in the new structure
+        # Get all uploaded files for the private_files_id
+        cur.execute(
+            """
+            SELECT file_url, file_type, user_selected_files, uploaded_at, id
+            FROM private_files_url
+            WHERE private_files_id = %s
+            ORDER BY uploaded_at DESC
+            """,
+            (private_files_id,)
+        )
 
-        cur.execute(query, tuple(params))
         rows = cur.fetchall()
-
-        if not rows:
-            return []
-
-        return [
+        files_data = [
             {
-                "id": row[0],
-                "File Details": {
-                    "file_type": row[1],
-                    "uploaded_by": row[3],
-                    "file_urls": row[2],
-                    "uploaded_at": row[4].isoformat(),
-                    "category": row[5]
-                }
+                "file_url": row[0],
+                "file_type": row[1],
+                "user_selected_files": row[2],
+                "uploaded_at": row[3],
+                "id": row[4]
             }
             for row in rows
         ]
+
+        return {
+            "private_files_id": private_files_id,
+            "uploaded_by": current_user["id"],
+            "category": category,
+            "uploaded_files": files_data
+        }
+
+    except Exception as e:
+        print(f"[GET Error] {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve uploaded files")
 
     finally:
         cur.close()
@@ -2441,9 +2427,10 @@ def get_uploaded_files(
 # Put for File_Upload
 @app.put("/photostudio/admin/private/fileupdate", response_model=Dict[str, Any])
 async def update_uploaded_file(
-    file_id: int = Query(..., description="ID of the file to update"),
-    category: str = Query(..., description="Category of the file"),
-    files: List[UploadFile] = File(...),
+    file_id: int = Query(...),  # File ID as a query parameter
+    category: str = Query(...),
+    file_url: str = Query(...),  # New file URL as a query parameter
+    file_type: str = Query(...),  # New file type as a query parameter
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2451,87 +2438,64 @@ async def update_uploaded_file(
 
     conn = get_db_connection()
     cur = conn.cursor()
-    s3_handler = S3Handler()
 
     try:
-        # Check ownership
-        cur.execute(
-            "SELECT uploaded_by, file_url FROM private_files WHERE private_files_id = %s AND category = %s",
-            (file_id, category)
-        )
-        row = cur.fetchone()
-
-        if not row:
-            raise HTTPException(status_code=404, detail="File record not found")
-        if row[0] != current_user["id"]:
-            raise HTTPException(status_code=403, detail="You cannot update files uploaded by others")
-        
-        existing_urls = row[1]
-        
-        # Upload new files to S3
-        new_file_urls = []
-        for file in files:
-            try:
-                file_url = s3_handler.upload_to_s3(file, "admin_files")
-                if file_url:
-                    new_file_urls.append(file_url)
-            except Exception as e:
-                print(f"S3 Upload Error for {file.filename}: {e}")
-        
-        if not new_file_urls:
-            raise HTTPException(status_code=400, detail="No files were uploaded successfully")
-            
-        # Combine existing and new URLs
-        updated_urls = existing_urls + new_file_urls
-        file_type = files[0].content_type  # Use the first file's type
-        
-        # Update the record
+        # Ensure that the file exists and is associated with the current user and the specified category
         cur.execute(
             """
-            UPDATE private_files
-            SET file_type = %s,
-                file_url = %s,
-                category = %s,
-                uploaded_at = NOW()
-            WHERE private_files_id = %s
-            RETURNING file_type, file_url, category;
+            SELECT private_files_id FROM private_files_url 
+            WHERE id = %s AND private_files_id IN (
+                SELECT private_files_id FROM private_files WHERE uploaded_by = %s AND category = %s
+            )
             """,
-            (file_type, updated_urls, category, file_id)
+            (file_id, current_user["id"], category)
+        )
+        result = cur.fetchone()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="File not found or not accessible")
+
+        private_files_id = result[0]
+
+        # Update the file details in the private_files_url table (excluding user_selected_files)
+        cur.execute(
+            """
+            UPDATE private_files_url 
+            SET file_url = %s, file_type = %s
+            WHERE id = %s
+            """,
+            (file_url, file_type, file_id)
         )
 
-        updated = cur.fetchone()
         conn.commit()
 
+        # Return updated file information
         return {
-            "message": "Files updated successfully",
+            "message": "File updated successfully",
             "updated_file": {
-                "id": file_id,
-                "File Details": {
-                    "file_type": updated[0],
-                    "uploaded_by": current_user["id"],
-                    "category": updated[2],
-                    "file_urls": updated[1]
-                }
+                "file_url": file_url,
+                "file_type": file_type,
+                "file_id": file_id,
+                "private_files_id": private_files_id,
+                "category": category
             }
         }
 
     except Exception as e:
-        conn.rollback()
-        print(f"[ERROR] Exception occurred during file update: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
-
+        print(f"[PUT Error] {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update file")
 
     finally:
         cur.close()
         conn.close()
+
+
 
 # Delete for File_Upload
 @app.delete("/photostudio/admin/private/filedelete", response_model=Dict[str, Any])
 async def delete_uploaded_file(
-    file_id: int = Query(..., description="ID of the file to delete"),
-    url_to_delete: Optional[str] = Query(None, description="Optional: specific file URL to delete"),
-    category: str = Query(..., description="Category of the file"),
+    file_id: int = Query(...),  # File ID as a query parameter
+    category: str = Query(...),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2539,82 +2503,57 @@ async def delete_uploaded_file(
 
     conn = get_db_connection()
     cur = conn.cursor()
-    s3_handler = S3Handler()
 
     try:
-        # 1. Fetch file URLs and uploader info
+        # Ensure that the file exists and is associated with the current user and the specified category
         cur.execute(
-            "SELECT file_url, uploaded_by FROM private_files WHERE private_files_id = %s AND category = %s",
-            (file_id, category)
-        )
-        row = cur.fetchone()
-
-        if not row:
-            raise HTTPException(status_code=404, detail="File not found")
-
-        file_urls, uploaded_by = row
-
-        if uploaded_by != current_user["id"]:
-            raise HTTPException(status_code=403, detail="You cannot modify files uploaded by others")
-
-        # CASE 1: Delete specific URL from file_urls
-        if url_to_delete:
-            if url_to_delete not in file_urls:
-                raise HTTPException(status_code=404, detail="URL not found in the file record")
-
-            s3_handler.delete_from_s3(url_to_delete)
-
-            # Remove URL from array in DB
-            cur.execute(
-                """
-                UPDATE private_files
-                SET file_url = array_remove(file_url, %s)
-                WHERE private_files_id = %s
-                RETURNING file_url
-                """,
-                (url_to_delete, file_id)
+            """
+            SELECT private_files_id FROM private_files_url 
+            WHERE id = %s AND private_files_id IN (
+                SELECT private_files_id FROM private_files WHERE uploaded_by = %s AND category = %s
             )
-            updated = cur.fetchone()
+            """,
+            (file_id, current_user["id"], category)
+        )
+        result = cur.fetchone()
 
-            if not updated or not updated[0]:
-                cur.execute("DELETE FROM private_files WHERE private_files_id = %s", (file_id,))
-                conn.commit()
-                return {
-                    "message": "URL deleted and record removed as no more URLs remain",
-                    "file_id": file_id
-                }
+        if not result:
+            raise HTTPException(status_code=404, detail="File not found or not accessible")
 
-            conn.commit()
-            return {
-                "message": "URL deleted successfully",
-                "file_id": file_id,
-                "remaining_urls": updated[0]
-            }
+        private_files_id = result[0]
 
-        # CASE 2: Delete all URLs and the entire record
-        for url in file_urls:
-            s3_handler.delete_from_s3(url)
+        # Delete the file from private_files_url table
+        cur.execute(
+            """
+            DELETE FROM private_files_url WHERE id = %s
+            """,
+            (file_id,)
+        )
 
-        cur.execute("DELETE FROM private_files WHERE private_files_id = %s", (file_id,))
         conn.commit()
 
+        # Return confirmation of deletion
         return {
-            "message": "All file URLs deleted and record removed",
-            "file_id": file_id,
+            "message": "File deleted successfully",
+            "deleted_file_id": file_id,
+            "private_files_id": private_files_id,
             "category": category
         }
 
     except Exception as e:
-        conn.rollback()
-        print(f"[ERROR] Exception occurred: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
+        print(f"[DELETE Error] {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete file")
 
     finally:
         cur.close()
         conn.close()
 
+
 # Selected Files
+import json
+from fastapi import HTTPException, Depends
+from typing import Dict, Any
+
 @app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
 async def user_select_files(
     request: FileSelectionRequest,
@@ -2626,86 +2565,77 @@ async def user_select_files(
     conn = get_db_connection()
     cur = conn.cursor()
     selected_urls = request.selected_urls
-    user_id = str(current_user["id"])
+    file_id = request.file_id
 
     try:
-        print("Request payload:", request.dict())
-        file_id = request.file_id
-
-        print("Fetching file with ID:", file_id)
-
-        # Fetch existing file data
+        # Fetch existing file data and category from the private_files table
         cur.execute(
             """
-            SELECT private_files_id, file_url, user_selected_files, uploaded_by, category
-            FROM private_files 
-            WHERE private_files_id = %s
+            SELECT p.private_files_id, p.category, pf.user_selected_files 
+            FROM private_files_url pf
+            JOIN private_files p ON pf.private_files_id = p.private_files_id
+            WHERE pf.id = %s
             """,
             (file_id,)
         )
 
         result = cur.fetchone()
-        print("Fetch result:", result)
 
         if not result:
             raise HTTPException(status_code=404, detail="File record not found")
 
-        file_id, file_urls, existing_selected, uploaded_by, category = result
+        private_files_id, category, existing_selected = result
 
-        # DEBUG: Print types for debugging
-        print(f"Types - file_urls: {type(file_urls)}, existing_selected: {type(existing_selected)}")
-        
-               
-        # We'll use the URLs from the request directly
-        valid_urls = selected_urls
-        print("Using selected URLs:", valid_urls)
-        
-        # If existing_selected is None, initialize as empty list
-        if existing_selected is None:
-            existing_selected = []
-            
-        # Combine existing selected with new selections
-        final_selected = existing_selected + valid_urls
+        # Check if existing_selected is None or an empty string and initialize as an empty list
+        if not existing_selected:
+            existing_selected = []  # Initialize as an empty list if None or empty string
+        else:
+            try:
+                # Try to load the existing selection from JSON if it's valid
+                existing_selected = json.loads(existing_selected)
+            except json.JSONDecodeError:
+                # If invalid JSON, initialize as an empty list
+                existing_selected = []
 
-        print("Updating file with new selections...")
-        
-        # Update the database - store the final selected URLs
+        # Combine existing selected with the new selections and ensure uniqueness
+        final_selected = list(set(existing_selected + selected_urls))
+
+        # Update the database to save the final selected URLs as a JSON string
         cur.execute(
             """
-            UPDATE private_files
+            UPDATE private_files_url
             SET user_selected_files = %s
-            WHERE private_files_id = %s
-            RETURNING private_files_id, category
+            WHERE id = %s
+            RETURNING id, file_url, user_selected_files
             """,
-            (final_selected, file_id)
+            (json.dumps(final_selected), file_id)  # Convert the list to JSON string before saving
         )
 
         update_result = cur.fetchone()
-        print("Update result:", update_result)
 
         if not update_result:
             raise HTTPException(status_code=404, detail="File update failed")
 
-        updated_file_id, file_category = update_result
+        updated_file_id, updated_file_url, updated_selected_files = update_result
         conn.commit()
 
         return {
             "message": "Your selected photos have been saved successfully.",
-            "selected_urls": valid_urls,
+            "selected_urls": selected_urls,
             "file_id": updated_file_id,
-            "category": file_category
+            "category": category,
+            "updated_selected_files": json.loads(updated_selected_files)  # Convert back to list for response
         }
 
     except Exception as e:
         conn.rollback()
         print(f"Error updating selections: {e}")
-        import traceback
-        traceback.print_exc()  # Print detailed error
         raise HTTPException(status_code=500, detail=f"Something went wrong while saving your selection: {str(e)}")
 
     finally:
         cur.close()
         conn.close()
+
 
 @app.get("/photostudio/user/private/get-select-files", response_model=Dict[str, Any])
 async def get_user_selected_files(
