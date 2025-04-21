@@ -210,7 +210,6 @@ class FileUploadRequest(BaseModel):
 
 class FileSelectionRequest(BaseModel):
     file_id: int
-    category: str
     selected_urls: List[str]
 
 
@@ -2615,6 +2614,7 @@ async def delete_uploaded_file(
         cur.close()
         conn.close()
 
+# Selected Files
 @app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
 async def user_select_files(
     request: FileSelectionRequest,
@@ -2629,70 +2629,87 @@ async def user_select_files(
     user_id = str(current_user["id"])
 
     try:
-        category = request.category 
-        # Get the record by file_id, category, and uploader
+        print("Request payload:", request.dict())
+        file_id = request.file_id
+
+        print("Fetching file with ID:", file_id)
+
+        # Fetch existing file data
         cur.execute(
             """
-            SELECT private_files_id, file_url, user_selected_files 
+            SELECT private_files_id, file_url, user_selected_files, uploaded_by, category
             FROM private_files 
-            WHERE uploaded_by = %s AND private_files_id = %s AND category = %s
+            WHERE private_files_id = %s
             """,
-            (user_id, request.file_id, category)
+            (file_id,)
         )
+
         result = cur.fetchone()
+        print("Fetch result:", result)
 
         if not result:
             raise HTTPException(status_code=404, detail="File record not found")
 
-        file_id, file_urls, existing_selected = result
+        file_id, file_urls, existing_selected, uploaded_by, category = result
 
-        valid_urls = [url for url in selected_urls if url in file_urls]
-        if not valid_urls:
-            raise HTTPException(status_code=400, detail="None of the selected URLs are valid")
+        # DEBUG: Print types for debugging
+        print(f"Types - file_urls: {type(file_urls)}, existing_selected: {type(existing_selected)}")
+        
+               
+        # We'll use the URLs from the request directly
+        valid_urls = selected_urls
+        print("Using selected URLs:", valid_urls)
+        
+        # If existing_selected is None, initialize as empty list
+        if existing_selected is None:
+            existing_selected = []
+            
+        # Combine existing selected with new selections
+        final_selected = existing_selected + valid_urls
 
-        remaining_urls = [url for url in file_urls if url not in valid_urls]
-        final_selected = (existing_selected or []) + valid_urls
-
+        print("Updating file with new selections...")
+        
+        # Update the database - store the final selected URLs
         cur.execute(
             """
             UPDATE private_files
-            SET file_url = %s, user_selected_files = %s
-            WHERE private_files_id = %s AND uploaded_by = %s AND category = %s
-            RETURNING private_files_id, file_type
+            SET user_selected_files = %s
+            WHERE private_files_id = %s
+            RETURNING private_files_id, category
             """,
-            (remaining_urls, final_selected, file_id, user_id, category)
+            (final_selected, file_id)
         )
 
         update_result = cur.fetchone()
+        print("Update result:", update_result)
+
         if not update_result:
             raise HTTPException(status_code=404, detail="File update failed")
 
-        file_id, file_type = update_result
+        updated_file_id, file_category = update_result
         conn.commit()
 
         return {
-            "message": "Your selected photos have been moved to selected files.",
+            "message": "Your selected photos have been saved successfully.",
             "selected_urls": valid_urls,
-            "remaining_urls": remaining_urls,
-            "user_id": user_id,
-            "file_id": file_id,
-            "category": category
+            "file_id": updated_file_id,
+            "category": file_category
         }
 
     except Exception as e:
         conn.rollback()
         print(f"Error updating selections: {e}")
+        import traceback
+        traceback.print_exc()  # Print detailed error
         raise HTTPException(status_code=500, detail=f"Something went wrong while saving your selection: {str(e)}")
 
     finally:
         cur.close()
         conn.close()
 
-
-@app.get("/photostudio/user/private/get-selected-files", response_model=Dict[str, Any])
+@app.get("/photostudio/user/private/get-select-files/{file_id}", response_model=Dict[str, Any])
 async def get_user_selected_files(
-    file_id: Optional[int] = None,
-    category: Optional[str] = Query(None, description="(Optional) Filter selected files by category"),
+    file_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2700,73 +2717,36 @@ async def get_user_selected_files(
 
     conn = get_db_connection()
     cur = conn.cursor()
-    user_id = str(current_user["id"])
 
     try:
-        if file_id:
-            query = """
-                SELECT private_files_id, file_type, file_url, user_selected_files, category
-                FROM private_files 
-                WHERE uploaded_by = %s AND private_files_id = %s
+        print("Fetching selected files for file_id:", file_id)
+
+        cur.execute(
             """
-            params = [user_id, file_id]
-            if category:
-                query += " AND category = %s"
-                params.append(category)
+            SELECT private_files_id, user_selected_files, category
+            FROM private_files
+            WHERE private_files_id = %s
+            """,
+            (file_id,)
+        )
 
-            cur.execute(query, tuple(params))
-            result = cur.fetchone()
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="File record not found")
 
-            if not result:
-                raise HTTPException(status_code=404, detail="File record not found")
+        file_id, selected_files, category = result
 
-            file_id, file_type, file_urls, selected_urls, matched_category = result
-
-            return {
-                "file_id": file_id,
-                "selected_urls": selected_urls or [],
-                "user_id": user_id,
-                "category": matched_category
-            }
-
-        else:
-            query = """
-                SELECT private_files_id, file_type, file_url, user_selected_files, category 
-                FROM private_files 
-                WHERE uploaded_by = %s AND user_selected_files IS NOT NULL AND array_length(user_selected_files, 1) > 0
-            """
-            params = [user_id]
-            if category:
-                query += " AND category = %s"
-                params.append(category)
-
-            cur.execute(query, tuple(params))
-            results = cur.fetchall()
-
-            selected_files = []
-            for record in results:
-                file_id, file_type, file_urls, selected_urls, matched_category = record
-                selected_files.append({
-                    "file_id": file_id,
-                    "file_details": {
-                        "file_type": file_type,
-                        "uploaded_by": user_id,
-                        "file_urls": file_urls
-                    },
-                    "selected_urls": selected_urls,
-                    "category": matched_category
-                })
-
-            return {
-                "selected_files": selected_files,
-                "user_id": user_id,
-                "total_count": len(selected_files),
-                "category_filtered": category if category else "all"
-            }
+        return {
+            "file_id": file_id,
+            "selected_urls": selected_files if selected_files else [],
+            "category": category
+        }
 
     except Exception as e:
-        print(f"Error retrieving selected files: {e}")
-        raise HTTPException(status_code=500, detail=f"Something went wrong while retrieving your selected files: {str(e)}")
+        print(f"Error retrieving selections: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="An error occurred while retrieving selected files.")
 
     finally:
         cur.close()
