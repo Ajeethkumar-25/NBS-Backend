@@ -210,6 +210,7 @@ class FileUploadRequest(BaseModel):
 
 class FileSelectionRequest(BaseModel):
     file_id: int
+    category: str
     selected_urls: List[str]
 
 
@@ -2280,6 +2281,7 @@ async def refresh_token(token: RefreshToken):
 @app.post("/photostudio/admin/private/fileupload", response_model=Dict[str, Any])
 async def admin_upload_files(
     files: List[UploadFile] = File(...),
+    category: str = Form(...),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2295,9 +2297,9 @@ async def admin_upload_files(
             """
             SELECT private_files_id, file_url
             FROM private_files
-            WHERE uploaded_by = %s
+            WHERE uploaded_by = %s  AND category = %s
             """,
-            (current_user["id"],)
+            (current_user["id"], category)
         )
         existing = cur.fetchone()
         
@@ -2344,11 +2346,11 @@ async def admin_upload_files(
                 file_type = files[0].content_type  # Use the first file's type
                 cur.execute(
                     """
-                    INSERT INTO private_files (file_type, file_url, uploaded_by, uploaded_at)
-                    VALUES (%s, %s, %s, NOW())
+                    INSERT INTO private_files (file_type, file_url, uploaded_by, uploaded_at, category)
+                    VALUES (%s, %s, %s, NOW(), %s)
                     RETURNING private_files_id, file_type;
                     """,
-                    (file_type, updated_urls, current_user["id"])
+                    (file_type, updated_urls, current_user["id"], category)
                 )
                 private_file_id, file_type = cur.fetchone()
             
@@ -2362,6 +2364,7 @@ async def admin_upload_files(
                     "File Details": {
                         "file_type": file_type,
                         "uploaded_by": current_user["id"],
+                        "category": category,
                         "file_urls": updated_urls
                     }
                 }]
@@ -2385,6 +2388,7 @@ async def admin_upload_files(
 def get_uploaded_files(
     file_id: Optional[int] = None,
     filename: Optional[str] = None,
+    category: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2395,7 +2399,7 @@ def get_uploaded_files(
     
     try:
         query = """
-            SELECT private_files_id, file_type, file_url, uploaded_by, uploaded_at
+            SELECT private_files_id, file_type, file_url, uploaded_by, uploaded_at, category
             FROM private_files
             WHERE uploaded_by = %s
         """
@@ -2404,6 +2408,10 @@ def get_uploaded_files(
         if file_id:
             query += " AND private_files_id = %s"
             params.append(file_id)
+
+        if category:
+            query += " AND category = %s"
+            params.append(category)
 
         # Removed filename filter since we're not storing filenames in the new structure
 
@@ -2420,7 +2428,8 @@ def get_uploaded_files(
                     "file_type": row[1],
                     "uploaded_by": row[3],
                     "file_urls": row[2],
-                    "uploaded_at": row[4].isoformat()
+                    "uploaded_at": row[4].isoformat(),
+                    "category": row[5]
                 }
             }
             for row in rows
@@ -2435,6 +2444,7 @@ def get_uploaded_files(
 async def update_uploaded_file(
     file_id: int,
     files: List[UploadFile] = File(...),
+    category: str = Form(...),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2447,8 +2457,8 @@ async def update_uploaded_file(
     try:
         # Check ownership
         cur.execute(
-            "SELECT uploaded_by, file_url FROM private_files WHERE private_files_id = %s",
-            (file_id,)
+            "SELECT uploaded_by, file_url FROM private_files WHERE private_files_id = %s AND category = %s",
+            (file_id, category)
         )
         row = cur.fetchone()
 
@@ -2482,11 +2492,12 @@ async def update_uploaded_file(
             UPDATE private_files
             SET file_type = %s,
                 file_url = %s,
+                category = %s,
                 uploaded_at = NOW()
             WHERE private_files_id = %s
-            RETURNING file_type, file_url;
+            RETURNING file_type, file_url, category;
             """,
-            (file_type, updated_urls, file_id)
+            (file_type, updated_urls, category, file_id)
         )
 
         updated = cur.fetchone()
@@ -2499,6 +2510,7 @@ async def update_uploaded_file(
                 "File Details": {
                     "file_type": updated[0],
                     "uploaded_by": current_user["id"],
+                    "category": updated[2],
                     "file_urls": updated[1]
                 }
             }
@@ -2520,6 +2532,7 @@ async def update_uploaded_file(
 async def delete_uploaded_file(
     file_id: int,
     url_to_delete: Optional[str] = Query(None, description="(Optional) Provide to delete a specific URL from the file_urls array"),
+    category: str = Form(...),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2530,10 +2543,10 @@ async def delete_uploaded_file(
     s3_handler = S3Handler()
 
     try:
-        # Fetch file URLs and uploader
+        # 1. Fetch file URLs and uploader info
         cur.execute(
-            "SELECT file_url, uploaded_by FROM private_files WHERE private_files_id = %s",
-            (file_id,)
+            "SELECT file_url, uploaded_by FROM private_files WHERE private_files_id = %s AND category = %s",
+            (file_id, category)
         )
         row = cur.fetchone()
 
@@ -2550,10 +2563,9 @@ async def delete_uploaded_file(
             if url_to_delete not in file_urls:
                 raise HTTPException(status_code=404, detail="URL not found in the file record")
 
-            # Delete that file from S3
             s3_handler.delete_from_s3(url_to_delete)
 
-            # Update DB by removing the single URL
+            # Remove URL from array in DB
             cur.execute(
                 """
                 UPDATE private_files
@@ -2565,7 +2577,6 @@ async def delete_uploaded_file(
             )
             updated = cur.fetchone()
 
-            # If array is now empty, delete entire record
             if not updated or not updated[0]:
                 cur.execute("DELETE FROM private_files WHERE private_files_id = %s", (file_id,))
                 conn.commit()
@@ -2582,19 +2593,17 @@ async def delete_uploaded_file(
             }
 
         # CASE 2: Delete all URLs and the entire record
-        else:
-            # Delete all files from S3
-            for url in file_urls:
-                s3_handler.delete_from_s3(url)
+        for url in file_urls:
+            s3_handler.delete_from_s3(url)
 
-            # Delete the record from DB
-            cur.execute("DELETE FROM private_files WHERE private_files_id = %s", (file_id,))
-            conn.commit()
+        cur.execute("DELETE FROM private_files WHERE private_files_id = %s", (file_id,))
+        conn.commit()
 
-            return {
-                "message": "All file URLs deleted and record removed",
-                "file_id": file_id
-            }
+        return {
+            "message": "All file URLs deleted and record removed",
+            "file_id": file_id,
+            "category": category
+        }
 
     except Exception as e:
         conn.rollback()
@@ -2617,59 +2626,48 @@ async def user_select_files(
     conn = get_db_connection()
     cur = conn.cursor()
     selected_urls = request.selected_urls
+    category = request.category  # Now extracted from request
     user_id = str(current_user["id"])
 
     try:
-        # First get the record containing all URLs
+        # Get the record by file_id, category, and uploader
         cur.execute(
             """
-            SELECT private_files_id, file_url, user_selected_files FROM private_files 
-            WHERE uploaded_by = %s AND private_files_id = %s
+            SELECT private_files_id, file_url, user_selected_files 
+            FROM private_files 
+            WHERE uploaded_by = %s AND private_files_id = %s AND category = %s
             """,
-            (user_id, request.file_id)
+            (user_id, request.file_id, category)
         )
         result = cur.fetchone()
-        
+
         if not result:
             raise HTTPException(status_code=404, detail="File record not found")
-        
+
         file_id, file_urls, existing_selected = result
-        
-        # Validate that all selected URLs are in the original file_urls list
-        valid_urls = []
-        for url in selected_urls:
-            if url in file_urls:
-                valid_urls.append(url)
-        
+
+        valid_urls = [url for url in selected_urls if url in file_urls]
         if not valid_urls:
             raise HTTPException(status_code=400, detail="None of the selected URLs are valid")
-        
-        # Remove selected URLs from file_url list
+
         remaining_urls = [url for url in file_urls if url not in valid_urls]
-        
-        # Merge with any existing selected files
-        if existing_selected:
-            final_selected = existing_selected + valid_urls
-        else:
-            final_selected = valid_urls
-        
-        # Update both columns - remove from file_url and add to user_selected_files
+        final_selected = (existing_selected or []) + valid_urls
+
         cur.execute(
             """
             UPDATE private_files
             SET file_url = %s, user_selected_files = %s
-            WHERE private_files_id = %s AND uploaded_by = %s
-            RETURNING private_files_id, file_type;
+            WHERE private_files_id = %s AND uploaded_by = %s AND category = %s
+            RETURNING private_files_id, file_type
             """,
-            (remaining_urls, final_selected, file_id, user_id)
+            (remaining_urls, final_selected, file_id, user_id, category)
         )
-        
+
         update_result = cur.fetchone()
         if not update_result:
             raise HTTPException(status_code=404, detail="File update failed")
-            
-        file_id, file_type = update_result
 
+        file_id, file_type = update_result
         conn.commit()
 
         return {
@@ -2677,7 +2675,8 @@ async def user_select_files(
             "selected_urls": valid_urls,
             "remaining_urls": remaining_urls,
             "user_id": user_id,
-            "file_id": file_id
+            "file_id": file_id,
+            "category": category
         }
 
     except Exception as e:
@@ -2689,9 +2688,11 @@ async def user_select_files(
         cur.close()
         conn.close()
 
+
 @app.get("/photostudio/user/private/get-selected-files", response_model=Dict[str, Any])
 async def get_user_selected_files(
     file_id: Optional[int] = None,
+    category: Optional[str] = Query(None, description="(Optional) Filter selected files by category"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2700,46 +2701,51 @@ async def get_user_selected_files(
     conn = get_db_connection()
     cur = conn.cursor()
     user_id = str(current_user["id"])
-    
+
     try:
-        # If a specific file_id is provided, get only that record
         if file_id:
-            cur.execute(
-                """
-                SELECT private_files_id, file_type, file_url, user_selected_files 
+            query = """
+                SELECT private_files_id, file_type, file_url, user_selected_files, category
                 FROM private_files 
                 WHERE uploaded_by = %s AND private_files_id = %s
-                """,
-                (user_id, file_id)
-            )
+            """
+            params = [user_id, file_id]
+            if category:
+                query += " AND category = %s"
+                params.append(category)
+
+            cur.execute(query, tuple(params))
             result = cur.fetchone()
-            
+
             if not result:
                 raise HTTPException(status_code=404, detail="File record not found")
-            
-            file_id, file_type, file_urls, selected_urls = result
-            
+
+            file_id, file_type, file_urls, selected_urls, matched_category = result
+
             return {
                 "file_id": file_id,
-                "selected_urls": selected_urls if selected_urls else [],
-                "user_id": user_id
+                "selected_urls": selected_urls or [],
+                "user_id": user_id,
+                "category": matched_category
             }
-        
-        # If no file_id provided, get all selected files for the user
+
         else:
-            cur.execute(
-                """
-                SELECT private_files_id, file_type, file_url, user_selected_files 
+            query = """
+                SELECT private_files_id, file_type, file_url, user_selected_files, category 
                 FROM private_files 
                 WHERE uploaded_by = %s AND user_selected_files IS NOT NULL AND array_length(user_selected_files, 1) > 0
-                """,
-                (user_id,)
-            )
+            """
+            params = [user_id]
+            if category:
+                query += " AND category = %s"
+                params.append(category)
+
+            cur.execute(query, tuple(params))
             results = cur.fetchall()
-            
+
             selected_files = []
             for record in results:
-                file_id, file_type, file_urls, selected_urls = record
+                file_id, file_type, file_urls, selected_urls, matched_category = record
                 selected_files.append({
                     "file_id": file_id,
                     "file_details": {
@@ -2747,13 +2753,15 @@ async def get_user_selected_files(
                         "uploaded_by": user_id,
                         "file_urls": file_urls
                     },
-                    "selected_urls": selected_urls
+                    "selected_urls": selected_urls,
+                    "category": matched_category
                 })
-            
+
             return {
                 "selected_files": selected_files,
                 "user_id": user_id,
-                "total_count": len(selected_files)
+                "total_count": len(selected_files),
+                "category_filtered": category if category else "all"
             }
 
     except Exception as e:
@@ -2763,6 +2771,7 @@ async def get_user_selected_files(
     finally:
         cur.close()
         conn.close()
+
 
 # Admin-product_frame
 @app.post("/photostudio/admin/product_frame", response_model=Dict[str, Any])
