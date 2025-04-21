@@ -4,6 +4,7 @@ import tempfile
 import bcrypt
 import re
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form
+from typing import Optional
 from fastapi.security import OAuth2PasswordBearer
 # from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -98,7 +99,7 @@ app.mount("/static/horoscopes", StaticFiles(directory=horoscopes_dir), name="sta
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173/", "http://localhost:3000/"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2364,56 +2365,62 @@ async def admin_upload_files(
 # Get Endpoint for file Upload
 @app.get("/photostudio/admin/private/get_files", response_model=Dict[str, Any])
 async def get_user_uploaded_files(
-    category: str = Query(...),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
-        raise HTTPException(status_code=403, detail="Only user can access this endpoint")
+        raise HTTPException(status_code=403, detail="Only users can access this endpoint")
 
     conn = get_db_connection()
     cur = conn.cursor()
 
     try:
-        # Get private_files_id for the user and category
-        cur.execute(
-            "SELECT private_files_id FROM private_files WHERE uploaded_by = %s AND category = %s",
-            (current_user["id"], category)
-        )
-        result = cur.fetchone()
-
-        if not result:
-            raise HTTPException(status_code=404, detail="No files found for this category")
-
-        private_files_id = result[0]
-
-        # Get all uploaded files for the private_files_id
+        # Step 1: Get all private_files_ids for the user
         cur.execute(
             """
-            SELECT file_url, file_type, user_selected_files, uploaded_at, id
-            FROM private_files_url
-            WHERE private_files_id = %s
-            ORDER BY uploaded_at DESC
+            SELECT private_files_id, category 
+            FROM private_files 
+            WHERE uploaded_by = %s
             """,
-            (private_files_id,)
+            (current_user["id"],)
         )
 
-        rows = cur.fetchall()
-        files_data = [
-            {
-                "file_url": row[0],
-                "file_type": row[1],
-                "user_selected_files": row[2],
-                "uploaded_at": row[3],
-                "id": row[4]
-            }
-            for row in rows
-        ]
+        private_file_records = cur.fetchall()
+
+        if not private_file_records:
+            raise HTTPException(status_code=404, detail="No files found for this user")
+
+        all_files_data = []
+
+        for private_files_id, category_value in private_file_records:
+            cur.execute(
+                """
+                SELECT file_url, file_type, user_selected_files, uploaded_at, id
+                FROM private_files_url
+                WHERE private_files_id = %s
+                ORDER BY uploaded_at DESC
+                """,
+                (private_files_id,)
+            )
+
+            files = cur.fetchall()
+            files_data = [
+                {
+                    "file_url": row[0],
+                    "file_type": row[1],
+                    "user_selected_files": row[2],
+                    "uploaded_at": row[3],
+                    "id": row[4],
+                    "category": category_value,
+                    "private_files_id": private_files_id
+                }
+                for row in files
+            ]
+
+            all_files_data.extend(files_data)
 
         return {
-            "private_files_id": private_files_id,
             "uploaded_by": current_user["id"],
-            "category": category,
-            "uploaded_files": files_data
+            "uploaded_files": all_files_data
         }
 
     except Exception as e:
@@ -2423,6 +2430,7 @@ async def get_user_uploaded_files(
     finally:
         cur.close()
         conn.close()
+
 
 # Put for File_Upload
 @app.put("/photostudio/admin/private/fileupdate", response_model=Dict[str, Any])
