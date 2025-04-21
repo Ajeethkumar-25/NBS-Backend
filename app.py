@@ -2440,6 +2440,7 @@ def get_uploaded_files(
         conn.close()
 
 # Put for File_Upload
+# Put for File_Upload
 @app.put("/photostudio/admin/private/fileupdate/{file_id}", response_model=Dict[str, Any])
 async def update_uploaded_file(
     file_id: int,
@@ -2455,7 +2456,27 @@ async def update_uploaded_file(
     s3_handler = S3Handler()
 
     try:
-        # Check ownership
+        # Add logging to see the input parameters
+        print(f"[DEBUG] Updating file - ID: {file_id}, Category: {category}, User: {current_user['id']}")
+        
+        # First check if the file exists at all without category restriction
+        cur.execute(
+            "SELECT uploaded_by, file_url, category FROM private_files WHERE private_files_id = %s",
+            (file_id,)
+        )
+        check_row = cur.fetchone()
+        
+        if not check_row:
+            raise HTTPException(status_code=404, detail="File record not found")
+        
+        # If file exists but category doesn't match, provide better error message
+        if check_row and check_row[2] != category:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Category mismatch. File has category '{check_row[2]}' but request specified '{category}'"
+            )
+            
+        # Now proceed with the regular check including category
         cur.execute(
             "SELECT uploaded_by, file_url FROM private_files WHERE private_files_id = %s AND category = %s",
             (file_id, category)
@@ -2463,7 +2484,7 @@ async def update_uploaded_file(
         row = cur.fetchone()
 
         if not row:
-            raise HTTPException(status_code=404, detail="File record not found")
+            raise HTTPException(status_code=404, detail="File record not found with specified category")
         if row[0] != current_user["id"]:
             raise HTTPException(status_code=403, detail="You cannot update files uploaded by others")
         
@@ -2532,7 +2553,7 @@ async def update_uploaded_file(
 async def delete_uploaded_file(
     file_id: int,
     url_to_delete: Optional[str] = Query(None, description="(Optional) Provide to delete a specific URL from the file_urls array"),
-    category: str = Form(...),
+    category: Optional[str] = Form(None),  # Made category optional
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2543,17 +2564,35 @@ async def delete_uploaded_file(
     s3_handler = S3Handler()
 
     try:
+        # Add logging
+        print(f"[DEBUG] Deleting file - ID: {file_id}, Category: {category}, URL to delete: {url_to_delete}")
+        
+        # Build the query based on whether category is provided
+        query = "SELECT file_url, uploaded_by, category FROM private_files WHERE private_files_id = %s"
+        params = [file_id]
+        
+        if category:
+            query += " AND category = %s"
+            params.append(category)
+            
         # 1. Fetch file URLs and uploader info
-        cur.execute(
-            "SELECT file_url, uploaded_by FROM private_files WHERE private_files_id = %s AND category = %s",
-            (file_id, category)
-        )
+        cur.execute(query, params)
         row = cur.fetchone()
 
         if not row:
+            # If no record found with category filter, check if file exists at all
+            if category:
+                cur.execute("SELECT category FROM private_files WHERE private_files_id = %s", (file_id,))
+                check_row = cur.fetchone()
+                if check_row:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"File exists but with different category: '{check_row[0]}'"
+                    )
+            
             raise HTTPException(status_code=404, detail="File not found")
 
-        file_urls, uploaded_by = row
+        file_urls, uploaded_by, file_category = row
 
         if uploaded_by != current_user["id"]:
             raise HTTPException(status_code=403, detail="You cannot modify files uploaded by others")
@@ -2602,7 +2641,7 @@ async def delete_uploaded_file(
         return {
             "message": "All file URLs deleted and record removed",
             "file_id": file_id,
-            "category": category
+            "category": file_category
         }
 
     except Exception as e:
