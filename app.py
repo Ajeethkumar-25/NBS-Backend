@@ -2439,11 +2439,11 @@ def get_uploaded_files(
         conn.close()
 
 # Put for File_Upload
-@app.put("/photostudio/admin/private/fileupdate/{file_id}", response_model=Dict[str, Any])
+@app.put("/photostudio/admin/private/fileupdate", response_model=Dict[str, Any])
 async def update_uploaded_file(
-    file_id: int,
+    file_id: int = Query(..., description="ID of the file to update"),
+    category: str = Query(..., description="Category of the file"),
     files: List[UploadFile] = File(...),
-    category: str = Form(...),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2527,11 +2527,11 @@ async def update_uploaded_file(
         conn.close()
 
 # Delete for File_Upload
-@app.delete("/photostudio/admin/private/filedelete/{file_id}", response_model=Dict[str, Any])
+@app.delete("/photostudio/admin/private/filedelete", response_model=Dict[str, Any])
 async def delete_uploaded_file(
-    file_id: int,
-    url_to_delete: Optional[str] = Query(None, description="(Optional) Provide to delete a specific URL from the file_urls array"),
-    category: str = Form(...),
+    file_id: int = Query(..., description="ID of the file to delete"),
+    url_to_delete: Optional[str] = Query(None, description="Optional: specific file URL to delete"),
+    category: str = Query(..., description="Category of the file"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
