@@ -2629,6 +2629,7 @@ async def user_select_files(
     user_id = str(current_user["id"])
 
     try:
+        category = request.category 
         # Get the record by file_id, category, and uploader
         cur.execute(
             """
