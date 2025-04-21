@@ -2707,9 +2707,9 @@ async def user_select_files(
         cur.close()
         conn.close()
 
-@app.get("/photostudio/user/private/get-select-files/{file_id}", response_model=Dict[str, Any])
+@app.get("/photostudio/user/private/get-select-files", response_model=Dict[str, Any])
 async def get_user_selected_files(
-    file_id: str,
+    file_id: int = Query(..., description="ID of the file to delete"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
