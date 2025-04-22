@@ -213,6 +213,12 @@ class FileSelectionRequest(BaseModel):
     file_id: int
     selected_urls: List[str]
 
+# Define Pydantic model
+class GetFileUpdate(BaseModel):
+    file_id: int
+    file_type: str
+    file_url: str
+    category: str
 
 class MatrimonyProfile(BaseModel):
     full_name: str
@@ -2388,7 +2394,7 @@ async def get_user_uploaded_files(
         private_file_records = cur.fetchall()
 
         if not private_file_records:
-            raise HTTPException(status_code=404, detail="No files found for this user")
+            return {"message": "No selected files found", "selected_files": []}
 
         all_files_data = []
 
@@ -2440,13 +2446,9 @@ async def get_user_uploaded_files(
         cur.close()
         conn.close()
 
-# Put for File_Upload
 @app.put("/photostudio/admin/private/fileupdate", response_model=Dict[str, Any])
 async def update_uploaded_file(
-    file_id: int = Query(...),  # File ID as a query parameter
-    category: str = Query(...),
-    file_url: str = Query(...),  # New file URL as a query parameter
-    file_type: str = Query(...),  # New file type as a query parameter
+    request_data: GetFileUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2456,15 +2458,15 @@ async def update_uploaded_file(
     cur = conn.cursor()
 
     try:
-        # Ensure that the file exists and is associated with the current user and the specified category
+        # Validate access
         cur.execute(
             """
-            SELECT private_files_id FROM private_files_url 
-            WHERE id = %s AND private_files_id IN (
-                SELECT private_files_id FROM private_files WHERE uploaded_by = %s AND category = %s
-            )
+            SELECT pf.private_files_id 
+            FROM private_files_url pfu
+            JOIN private_files pf ON pf.private_files_id = pfu.private_files_id
+            WHERE pfu.id = %s AND pf.uploaded_by = %s AND pf.category = %s
             """,
-            (file_id, current_user["id"], category)
+            (request_data.file_id, current_user["id"], request_data.category)
         )
         result = cur.fetchone()
 
@@ -2473,39 +2475,36 @@ async def update_uploaded_file(
 
         private_files_id = result[0]
 
-        # Update the file details in the private_files_url table (excluding user_selected_files)
+        # Perform update
         cur.execute(
             """
             UPDATE private_files_url 
             SET file_url = %s, file_type = %s
             WHERE id = %s
             """,
-            (file_url, file_type, file_id)
+            (request_data.file_url, request_data.file_type, request_data.file_id)
         )
-
         conn.commit()
 
-        # Return updated file information
         return {
             "message": "File updated successfully",
             "updated_file": {
-                "file_url": file_url,
-                "file_type": file_type,
-                "file_id": file_id,
+                "file_url": request_data.file_url,
+                "file_type": request_data.file_type,
+                "file_id": request_data.file_id,
                 "private_files_id": private_files_id,
-                "category": category
+                "category": request_data.category
             }
         }
 
     except Exception as e:
         print(f"[PUT Error] {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to update file")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Error while validating file access")
 
     finally:
         cur.close()
         conn.close()
-
-
 
 # Delete for File_Upload
 @app.delete("/photostudio/admin/private/filedelete", response_model=Dict[str, Any])
@@ -2563,13 +2562,55 @@ async def delete_uploaded_file(
     finally:
         cur.close()
         conn.close()
+# All-Delete
+@app.delete("/photostudio/admin/private/delete_all", response_model=Dict[str, Any])
+async def delete_files_by_private_id(
+    private_files_id: int = Query(...),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    if current_user.get("user_type") != "user":
+        raise HTTPException(status_code=403, detail="Only user can access this endpoint")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        # Validate user ownership of the private_files_id
+        cur.execute(
+            """
+            SELECT 1 FROM private_files 
+            WHERE private_files_id = %s AND uploaded_by = %s
+            """,
+            (private_files_id, current_user["id"])
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="private_files_id not found or not owned by user")
+
+        # Delete files from private_files_url
+        cur.execute(
+            """
+            DELETE FROM private_files_url 
+            WHERE private_files_id = %s
+            """,
+            (private_files_id,)
+        )
+        conn.commit()
+
+        return {
+            "message": "All files under the given private_files_id deleted successfully",
+            "private_files_id": private_files_id
+        }
+
+    except Exception as e:
+        print(f"[DELETE by private_files_id Error] {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete files")
+
+    finally:
+        cur.close()
+        conn.close()
 
 
 # Selected Files
-import json
-from fastapi import HTTPException, Depends
-from typing import Dict, Any
-
 @app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
 async def user_select_files(
     request: FileSelectionRequest,
