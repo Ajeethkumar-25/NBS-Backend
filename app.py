@@ -209,9 +209,13 @@ class FileResponse(BaseModel):
 class FileUploadRequest(BaseModel):
     category: str
 
-class FileSelectionRequest(BaseModel):
-    file_id: int
+class FileData(BaseModel):
+    private_files_id: int
     selected_urls: List[str]
+
+class FileSelectionsRequest(BaseModel):
+    private_files: List[FileData]
+
 
 # Define Pydantic model
 class GetFileUpdate(BaseModel):
@@ -2613,7 +2617,7 @@ async def delete_files_by_private_id(
 # Selected Files
 @app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
 async def user_select_files(
-    request: FileSelectionRequest,
+    request: FileSelectionsRequest,  # Use the new model
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -2621,67 +2625,75 @@ async def user_select_files(
 
     conn = get_db_connection()
     cur = conn.cursor()
-    selected_urls = request.selected_urls
-    file_id = request.file_id
 
     try:
-        # Fetch existing file data and category from the private_files table
-        cur.execute(
-            """
-            SELECT p.private_files_id, p.category, pf.user_selected_files 
-            FROM private_files_url pf
-            JOIN private_files p ON pf.private_files_id = p.private_files_id
-            WHERE pf.id = %s
-            """,
-            (file_id,)
-        )
+        updated_records = []
+        
+        # Loop through each private_files_id and selected_urls
+        for file_data in request.private_files:
+            private_files_id = file_data.private_files_id  # Access the private_files_id directly
+            selected_urls = file_data.selected_urls  # Access selected_urls directly
 
-        result = cur.fetchone()
+            # Step 1: Fetch category for this private_files_id
+            cur.execute(
+                """
+                SELECT category FROM private_files
+                WHERE private_files_id = %s
+                """,
+                (private_files_id,)
+            )
+            result = cur.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail=f"Invalid private_files_id: {private_files_id}")
+            category = result[0]
 
-        if not result:
-            raise HTTPException(status_code=404, detail="File record not found")
+            # Step 2: Fetch all file URLs under this private_files_id
+            cur.execute(
+                """
+                SELECT id, file_url, user_selected_files FROM private_files_url
+                WHERE private_files_id = %s
+                """,
+                (private_files_id,)
+            )
+            all_files = cur.fetchall()
 
-        private_files_id, category, existing_selected = result
+            # Step 3: Update the selection status for each file
+            for fid, url, existing_selection in all_files:
+                is_selected = url in selected_urls
+                updated_selection = json.dumps({"selected": is_selected})
 
-        # Check if existing_selected is None or an empty string and initialize as an empty list
-        if not existing_selected:
-            existing_selected = []  # Initialize as an empty list if None or empty string
-        else:
-            try:
-                # Try to load the existing selection from JSON if it's valid
-                existing_selected = json.loads(existing_selected)
-            except json.JSONDecodeError:
-                # If invalid JSON, initialize as an empty list
-                existing_selected = []
+                # Update the file's selection status
+                cur.execute(
+                    """
+                    UPDATE private_files_url
+                    SET user_selected_files = %s
+                    WHERE id = %s
+                    RETURNING id, file_url, user_selected_files
+                    """,
+                    (updated_selection, fid)
+                )
+                record = cur.fetchone()
+                updated_records.append((record[0], record[1], record[2], category))  # Include category here
 
-        # Combine existing selected with the new selections and ensure uniqueness
-        final_selected = list(set(existing_selected + selected_urls))
 
-        # Update the database to save the final selected URLs as a JSON string
-        cur.execute(
-            """
-            UPDATE private_files_url
-            SET user_selected_files = %s
-            WHERE id = %s
-            RETURNING id, file_url, user_selected_files
-            """,
-            (json.dumps(final_selected), file_id)  # Convert the list to JSON string before saving
-        )
-
-        update_result = cur.fetchone()
-
-        if not update_result:
-            raise HTTPException(status_code=404, detail="File update failed")
-
-        updated_file_id, updated_file_url, updated_selected_files = update_result
         conn.commit()
 
+        # Prepare updated file details for the response
+        updated_result = [
+            {
+                "file_id": row[0],
+                "file_url": row[1],
+                "selected_status": json.loads(row[2]),  # Deserialize the selection
+                "category": row[3]
+            }
+            for row in updated_records
+        ]
+
         return {
-            "message": "Your selected photos have been saved successfully.",
-            "selected_urls": selected_urls,
-            "file_id": updated_file_id,
-            "category": category,
-            "updated_selected_files": json.loads(updated_selected_files)  # Convert back to list for response
+            "message": "File selections updated successfully.",
+            # "category": category,
+            "private_files_id": private_files_id,
+            "updated_files": updated_result
         }
 
     except Exception as e:
@@ -2694,62 +2706,70 @@ async def user_select_files(
         conn.close()
 
 
-@app.get("/photostudio/user/private/selected-files", response_model=Dict[str, Any])
-async def get_user_selected_files(current_user: Dict[str, Any] = Depends(get_current_user)):
+@app.get("/photostudio/user/private/get_select_files", response_model=Dict[str, Any])
+async def user_get_all_selected_files(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
     if current_user.get("user_type") != "user":
         raise HTTPException(status_code=403, detail="Only users can access this endpoint")
-
-    user_id = current_user.get("id")  # Get the user ID from the current user
 
     conn = get_db_connection()
     cur = conn.cursor()
 
     try:
-        # Updated SQL query to filter by uploaded_by
-        cur.execute("""
-            SELECT pf.category, pf_url.id, pf_url.file_url, pf_url.file_type, pf_url.user_selected_files
-            FROM private_files_url pf_url
-            JOIN private_files pf ON pf.private_files_id = pf_url.private_files_id
-            WHERE pf_url.user_selected_files IS NOT NULL 
-            AND pf_url.user_selected_files <> ''
-            AND pf.uploaded_by = %s
-        """, (user_id,))
+        # Step 1: Fetch all private_files_ids and their associated categories
+        cur.execute(
+            """
+            SELECT private_files_id, category FROM private_files
+            WHERE uploaded_by = %s
+            """,
+            (current_user["id"],)  # Filter by the current user
+        )
+        private_files = cur.fetchall()
 
-        rows = cur.fetchall()
+        # Step 2: Prepare the result for each private_files_id
+        all_files_result = []
 
-        if not rows:
-            return {"message": "No selected files found", "selected_files": []}
+        for private_files_id, category in private_files:
+            # Fetch all file URLs and user-selected status for this private_files_id
+            cur.execute(
+                """
+                SELECT id, file_url, user_selected_files FROM private_files_url
+                WHERE private_files_id = %s
+                """,
+                (private_files_id,)
+            )
+            all_files = cur.fetchall()
 
-        selected_files = []
+            updated_result = [
+                {
+                    "file_id": row[0],
+                    "file_url": row[1],
+                    "selected_status": json.loads(row[2]) if row[2] else {}  # Deserialize the selection
+                }
+                for row in all_files
+            ]
 
-        for row in rows:
-            category, file_id, file_url, file_type, user_selected_files = row
-
-            try:
-                selected_urls = json.loads(user_selected_files)
-            except json.JSONDecodeError:
-                selected_urls = []
-
-            selected_files.append({
-                "file_id": file_id,
+            # Append the results for this private_files_id
+            all_files_result.append({
                 "category": category,
-                "file_url": file_url,
-                "file_type": file_type,
-                "user_selected_files": selected_urls
+                "private_files_id": private_files_id,
+                "selected_files": updated_result
             })
 
         return {
-            "message": "Selected files fetched successfully",
-            "selected_files": selected_files
+            "message": "File selection data fetched successfully.",
+            "files_data": all_files_result
         }
 
     except Exception as e:
-        print(f"Error fetching selected files: {e}")
-        raise HTTPException(status_code=500, detail="Something went wrong while fetching selected files")
+        print(f"Error fetching file selections: {e}")
+        raise HTTPException(status_code=500, detail=f"Something went wrong while fetching the selections: {str(e)}")
 
     finally:
         cur.close()
         conn.close()
+
 
 # Admin-product_frame
 @app.post("/photostudio/admin/product_frame", response_model=Dict[str, Any])
