@@ -2361,11 +2361,12 @@ async def admin_upload_files(
         cur.close()
         conn.close()
 
+from fastapi import Query
 
-# Get Endpoint for file Upload
 @app.get("/photostudio/admin/private/get_files", response_model=Dict[str, Any])
 async def get_user_uploaded_files(
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    file_id: int = Query(None, alias="file_id")  # Optional query parameter for file_id
 ):
     if current_user.get("user_type") != "user":
         raise HTTPException(status_code=403, detail="Only users can access this endpoint")
@@ -2392,31 +2393,39 @@ async def get_user_uploaded_files(
         all_files_data = []
 
         for private_files_id, category_value in private_file_records:
-            cur.execute(
-                """
+            # Step 2: If file_id is provided, filter by it
+            query = """
                 SELECT file_url, file_type, user_selected_files, uploaded_at, id
                 FROM private_files_url
                 WHERE private_files_id = %s
-                ORDER BY uploaded_at DESC
-                """,
-                (private_files_id,)
-            )
+            """
+            params = [private_files_id]
 
+            if file_id:
+                query += " AND id = %s"
+                params.append(file_id)
+
+            # Fetch the files based on the query
+            cur.execute(query + " ORDER BY uploaded_at DESC", tuple(params))
             files = cur.fetchall()
-            files_data = [
-                {
-                    "file_url": row[0],
-                    "file_type": row[1],
-                    "user_selected_files": row[2],
-                    "uploaded_at": row[3],
-                    "id": row[4],
-                    "category": category_value,
-                    "private_files_id": private_files_id
-                }
-                for row in files
-            ]
 
-            all_files_data.extend(files_data)
+            if files:
+                files_data = [
+                    {
+                        "file_url": row[0],
+                        "file_type": row[1],
+                        "user_selected_files": row[2],
+                        "uploaded_at": row[3],
+                        "id": row[4],
+                        "category": category_value,
+                        "private_files_id": private_files_id
+                    }
+                    for row in files
+                ]
+                all_files_data.extend(files_data)
+
+        if not all_files_data:
+            raise HTTPException(status_code=404, detail="No files found for this user")
 
         return {
             "uploaded_by": current_user["id"],
@@ -2430,7 +2439,6 @@ async def get_user_uploaded_files(
     finally:
         cur.close()
         conn.close()
-
 
 # Put for File_Upload
 @app.put("/photostudio/admin/private/fileupdate", response_model=Dict[str, Any])
@@ -2645,51 +2653,62 @@ async def user_select_files(
         conn.close()
 
 
-@app.get("/photostudio/user/private/get-select-files", response_model=Dict[str, Any])
-async def get_user_selected_files(
-    file_id: int = Query(..., description="ID of the file to delete"),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
+@app.get("/photostudio/user/private/selected-files", response_model=Dict[str, Any])
+async def get_user_selected_files(current_user: Dict[str, Any] = Depends(get_current_user)):
     if current_user.get("user_type") != "user":
         raise HTTPException(status_code=403, detail="Only users can access this endpoint")
+
+    user_id = current_user.get("id")  # Get the user ID from the current user
 
     conn = get_db_connection()
     cur = conn.cursor()
 
     try:
-        print("Fetching selected files for file_id:", file_id)
+        # Updated SQL query to filter by uploaded_by
+        cur.execute("""
+            SELECT pf.category, pf_url.id, pf_url.file_url, pf_url.file_type, pf_url.user_selected_files
+            FROM private_files_url pf_url
+            JOIN private_files pf ON pf.private_files_id = pf_url.private_files_id
+            WHERE pf_url.user_selected_files IS NOT NULL 
+            AND pf_url.user_selected_files <> ''
+            AND pf.uploaded_by = %s
+        """, (user_id,))
 
-        cur.execute(
-            """
-            SELECT private_files_id, user_selected_files, category
-            FROM private_files
-            WHERE private_files_id = %s
-            """,
-            (file_id,)
-        )
+        rows = cur.fetchall()
 
-        result = cur.fetchone()
-        if not result:
-            raise HTTPException(status_code=404, detail="File record not found")
+        if not rows:
+            return {"message": "No selected files found", "selected_files": []}
 
-        file_id, selected_files, category = result
+        selected_files = []
+
+        for row in rows:
+            category, file_id, file_url, file_type, user_selected_files = row
+
+            try:
+                selected_urls = json.loads(user_selected_files)
+            except json.JSONDecodeError:
+                selected_urls = []
+
+            selected_files.append({
+                "file_id": file_id,
+                "category": category,
+                "file_url": file_url,
+                "file_type": file_type,
+                "user_selected_files": selected_urls
+            })
 
         return {
-            "file_id": file_id,
-            "selected_urls": selected_files if selected_files else [],
-            "category": category
+            "message": "Selected files fetched successfully",
+            "selected_files": selected_files
         }
 
     except Exception as e:
-        print(f"Error retrieving selections: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="An error occurred while retrieving selected files.")
+        print(f"Error fetching selected files: {e}")
+        raise HTTPException(status_code=500, detail="Something went wrong while fetching selected files")
 
     finally:
         cur.close()
         conn.close()
-
 
 # Admin-product_frame
 @app.post("/photostudio/admin/product_frame", response_model=Dict[str, Any])
