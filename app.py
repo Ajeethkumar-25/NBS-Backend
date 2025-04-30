@@ -36,8 +36,7 @@ import json
 from twilio.rest import Client
 from dotenv import load_dotenv
 import traceback
-
-
+from astrology_terms import ASTROLOGY_TERMS
 
 # Twilio credentials (hardcoded)
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -215,7 +214,6 @@ class FileData(BaseModel):
 
 class FileSelectionsRequest(BaseModel):
     private_files: List[FileData]
-
 
 # Define Pydantic model
 class GetFileUpdate(BaseModel):
@@ -1419,17 +1417,8 @@ async def verify_otp(request: OTPVerify):
     finally:
         cur.close()
         conn.close()
-
-
-
-# def parse_number(value: Union[str, None], num_type):
-#     if value in [None, ""]:
-#         return None
-#     try:
-#         return num_type(value)
-#     except ValueError:
-#         return None
-
+        
+        
 def convert_empty_to_none(value):
     """ Convert empty strings to None (NULL in PostgreSQL) """
     return None if value == "" else value
@@ -1574,9 +1563,7 @@ async def register_matrimony(
     finally:
         cur.close()
         conn.close()
-
-
-
+        
 @app.post("/matrimony/login", response_model=MatrimonyToken)
 async def login_matrimony(
     request: MatrimonyLoginRequest
@@ -1615,7 +1602,6 @@ async def login_matrimony(
                 raise HTTPException(status_code=401, detail="Invalid phone number")
 
         # Create access token
-        # Create access token including the user_type
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
             data={"sub": user["matrimony_id"], "user_type": "user"},  # Add user_type here
@@ -1652,7 +1638,7 @@ def get_last_matrimony_id():
         conn = get_db_connection()
         cur = conn.cursor()
         
-        cur.execute("SELECT last_matrimony_id FROM matrimony_id_tracker ORDER BY updated_at DESC LIMIT 1;")
+        cur.execute("SELECT matrimony_id FROM matrimony_profiles ORDER BY matrimony_id DESC LIMIT 1;")
         result = cur.fetchone()
         
         cur.close()
@@ -1708,8 +1694,7 @@ def increment_matrimony_id(request: IncrementMatrimonyIdRequest):
             cur.close()
         if conn:
             conn.close()
-
-
+            
 @app.post("/matrimony/refresh-token", response_model=TokenResponse)
 async def matrimony_refresh_token(token: RefreshTokenRequest):
     logger.debug(f"Received refresh token: {token.refresh_token}")
@@ -1758,23 +1743,18 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
         if 'conn' in locals():
             conn.close()
 
-
 @app.get("/matrimony/profiles", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
-    language: str = Query("en", description="Language for response (e.g., 'en', 'ta')"),
+    language: str = Query("ta", description="Language for response (e.g., 'en', 'ta')")
 ):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
         logger.info(f"Current user: {current_user}")
+        logger.info(f"Requested language: {language}")
 
-        query = """
-            SELECT 
-            *
-            FROM matrimony_profiles
-            WHERE 1=1
-        """
+        query = "SELECT * FROM matrimony_profiles WHERE 1=1"
         params = []
 
         if current_user["user_type"] != "admin":
@@ -1784,98 +1764,110 @@ async def get_matrimony_profiles(
             opposite_gender = "Female" if user_gender.lower() == "male" else "Male"
             query += " AND gender ILIKE %s"
             params.append(opposite_gender)
-            logger.info(f"User gender: {user_gender}, Opposite gender: {opposite_gender}")
+            logger.info(f"Filtering opposite gender: {opposite_gender}")
 
-        logger.info(f"Executing query: {query} with params: {params}")
         cur.execute(query, params)
         profiles = cur.fetchall()
-        logger.info(f"Profiles fetched: {profiles}")
+        logger.info(f"Fetched profiles count: {len(profiles)}")
 
         if not profiles:
-            logger.info("No profiles found matching the criteria")
             return []
 
-        result_profiles = []
-        translator = Translator() if language != "en" else None
+        translator = None
+        if language != "en":
+            try:
+                from googletrans import Translator
+                translator = Translator()
+                translator.translate("test", src="en", dest=language)  # test init
+                logger.info(f"Translator initialized for language: {language}")
+            except Exception as e:
+                logger.error(f"Translator failed to initialize: {e}")
+                translator = None
 
-        # Function to process S3 URLs
         def process_s3_urls(value, folder_name):
-            if value and isinstance(value, str) and value.strip():  # Ensure it's not empty
+            if value and isinstance(value, str):
+                items = [item.strip() for item in value.replace("{", "").replace("}", "").split(',') if item.strip()]
                 return [
-                    f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item.strip()}"
-                    for item in value.replace("{", "").replace("}", "").split(',')
-                    if item.strip()
-                ]
-            return None  # Return `None` if empty
+                    f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
+                    for item in items
+                ] if items else None
+            return None
+
+        def translate_static_term(term: str, lang: str) -> str:
+            key = term.strip().lower().replace(" ", "_")
+            return ASTROLOGY_TERMS.get(key, {}).get(lang, term)
+
+        result_profiles = []
 
         for profile in profiles:
-            profile_dict = dict(zip([desc[0] for desc in cur.description], profile))
+            profile_dict = dict(profile)
 
-            # **Convert empty strings to None**
+            # Clean up empty strings and format dates
             for key, value in profile_dict.items():
-                if isinstance(value, str) and value.strip() == "":
+                if isinstance(value, str) and not value.strip():
                     profile_dict[key] = None
 
-            # **Convert Time and Date fields properly**
-            if profile_dict.get('birth_time'):
-                if isinstance(profile_dict['birth_time'], time):
-                    profile_dict['birth_time'] = profile_dict['birth_time'].strftime('%H:%M:%S')
+            if isinstance(profile_dict.get("birth_time"), time):
+                profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
-            if profile_dict.get('date_of_birth'):
-                if isinstance(profile_dict['date_of_birth'], datetime):
-                    profile_dict['date_of_birth'] = profile_dict['date_of_birth'].strftime('%Y-%m-%d')
+            if isinstance(profile_dict.get("date_of_birth"), datetime):
+                profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
 
-            # **Convert S3 File Paths to URLs**
+            if profile_dict.get("date_of_birth"):
+                dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
+                today = datetime.today()
+                profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+            # S3 file processing
             profile_dict["photo_path"] = (
                 f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{profile_dict['photo_path'].strip()}"
-                if profile_dict.get("photo_path") and profile_dict["photo_path"].strip() else None
+                if profile_dict.get("photo_path") else "https://your-domain.com/static/default-profile.jpg"
             )
 
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
-            # **Ensure translation happens only when needed**
-            if translator:
+            # Translation
+            profile_dict["is_translated"] = False
+            if translator and language != "en":
                 translatable_fields = [
-                    'full_name', 'occupation', 'education', 'gender', 'mother_tongue',
-                    'work_type', 'company', 'work_location', 'work_country', 'mother_name',
-                    'father_name', 'native', 'mother_occupation', 'father_occupation',
-                    'religion', 'caste', 'sub_caste', 'nakshatra', 'birth_place', 'rashi',
-                    'ascendent'
+                    "full_name", "occupation", "gender", "education", "mother_tongue", "dhosham", 
+                    "work_type", "company", "work_location", "religion", "caste", "sub_caste"
                 ]
-                
-                to_translate = [profile_dict[field] for field in translatable_fields if profile_dict.get(field)]
-                
-                if to_translate:  # **Ensure there's something to translate**
-                    logger.info(f"Fields to translate: {to_translate}")
-                    try:
-                        translations = translator.translate(to_translate, dest=language)
-                        for i, field in enumerate(translatable_fields):
-                            if profile_dict.get(field):
-                                profile_dict[field] = translations[i].text
-                    except Exception as e:
-                        logger.error(f"Translation error: {str(e)} with fields: {to_translate}")
+                for field in translatable_fields:
+                    if field in profile_dict and isinstance(profile_dict[field], str):
+                        try:
+                            translated = translator.translate(profile_dict[field], src="en", dest=language)
+                            profile_dict[field] = translated.text
+                            profile_dict["is_translated"] = True
+                        except Exception as e:
+                            logger.warning(f"Translation failed for {field}: {e}")
 
-            # **Validate the response model**
+                # Astrology-specific translation using static map
+                for astro_field in ["nakshatra", "rashi", "dhosham"]:
+                    if profile_dict.get(astro_field):
+                        profile_dict[astro_field] = translate_static_term(profile_dict[astro_field], language)
+                        profile_dict["is_translated"] = True
+
+            # Model validation
             try:
                 result_profiles.append(MatrimonyProfileResponse(**profile_dict))
-            except ValidationError as ve:
-                logger.error(f"Validation error: {ve.json()}")
-                raise HTTPException(status_code=400, detail=f"Validation error: {ve.json()}")
+            except ValidationError as e:
+                logger.error(f"Validation error for {profile_dict.get('matrimony_id')}: {e}")
+                continue
 
-        logger.info(f"Successfully retrieved {len(result_profiles)} profiles")
+        logger.info(f"Returning {len(result_profiles)} profiles")
         return result_profiles
 
     except Exception as e:
-        logger.error(f"Error in get_matrimony_profiles: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error retrieving profiles")
-
+        logger.error(f"Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Server error while fetching profiles.")
     finally:
         cur.close()
         conn.close()
 
 
-
+        
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
@@ -2475,7 +2467,7 @@ async def update_uploaded_file(
         result = cur.fetchone()
 
         if not result:
-            raise HTTPException(status_code=404, detail="File not found or not accessible")
+            raise HTTPException(status_code=200, detail="File not found or not accessible")
 
         private_files_id = result[0]
 
@@ -2537,7 +2529,7 @@ async def delete_uploaded_file(
         result = cur.fetchone()
 
         if not result:
-            raise HTTPException(status_code=404, detail="File not found or not accessible")
+            raise HTTPException(status_code=200, detail="File not found or not accessible")
 
         private_files_id = result[0]
 
@@ -2566,6 +2558,7 @@ async def delete_uploaded_file(
     finally:
         cur.close()
         conn.close()
+        
 # All-Delete
 @app.delete("/photostudio/admin/private/delete_all", response_model=Dict[str, Any])
 async def delete_files_by_private_id(
@@ -2588,7 +2581,7 @@ async def delete_files_by_private_id(
             (private_files_id, current_user["id"])
         )
         if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="private_files_id not found or not owned by user")
+            raise HTTPException(status_code=200, detail="private_files_id not found or not owned by user")
 
         # Delete files from private_files_url
         cur.execute(
@@ -2769,7 +2762,6 @@ async def user_get_all_selected_files(
     finally:
         cur.close()
         conn.close()
-
 
 # Admin-product_frame
 @app.post("/photostudio/admin/product_frame", response_model=Dict[str, Any])
