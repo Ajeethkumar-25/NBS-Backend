@@ -1480,6 +1480,8 @@ async def register_matrimony(
     photo: Optional[UploadFile] = File(None),
     photos: Optional[List[UploadFile]] = File(None),
     horoscope_documents: Optional[List[UploadFile]] = File(None),
+    matrimony_id: Optional[str] = Form(None)
+
 ):
     try:
         # Initialize S3 Handler
@@ -1488,21 +1490,56 @@ async def register_matrimony(
         # Hash password
         hashed_password = pwd_context.hash(password)
 
-        # Upload profile photo to S3
-        photo_url = s3_handler.upload_to_s3(photo, "profile_photos") if photo else None
+        # Process profile photo
+        photo_url = None
+        if photo:
+            try:
+                photo_url = s3_handler.upload_to_s3(photo, "profile_photos")
+                logger.info(f"Profile photo uploaded to: {photo_url}")
+            except Exception as e:
+                logger.error(f"Profile photo upload failed: {str(e)}")
+                raise HTTPException(status_code=400, detail="Profile photo upload failed")
 
-        # Upload multiple photos to S3
-        photos_urls = [s3_handler.upload_to_s3(p, "photos") for p in photos] if photos else []
+        # Process multiple photos
+        photos_urls = []
+        if photos:
+            for p in photos:
+                try:
+                    url = s3_handler.upload_to_s3(p, "photos")
+                    photos_urls.append(url)
+                    logger.info(f"Uploaded photo: {url}")
+                except Exception as e:
+                    logger.error(f"Photo upload failed: {str(e)}")
+                    continue
 
-        # Upload horoscope documents to S3
-        horoscope_urls = [s3_handler.upload_to_s3(h, "horoscopes") for h in horoscope_documents] if horoscope_documents else []
+        # Process horoscope documents
+        horoscope_urls = []
+        if horoscope_documents:
+            for h in horoscope_documents:
+                try:
+                    url = s3_handler.upload_to_s3(h, "horoscopes")
+                    horoscope_urls.append(url)
+                    logger.info(f"Uploaded horoscope: {url}")
+                except Exception as e:
+                    logger.error(f"Horoscope upload failed: {str(e)}")
+                    continue
+
+        # Convert to PostgreSQL array format
+        def format_array(urls):
+            return "{" + ",".join(urls) + "}" if urls else None
+
+        photos_array = format_array(photos_urls)
+        horoscope_array = format_array(horoscope_urls)
+
+        # Debug logging
+        logger.info(f"Files processed - Profile: {photo_url}, Photos: {photos_array}, Horoscopes: {horoscope_array}")
 
         # Generate Matrimony ID
         matrimony_id = generate_matrimony_id()
 
-        # Convert lists to PostgreSQL array format
-        photos_array = '{' + ','.join(photos_urls) + '}' if photos_urls else None
-        horoscope_array = '{' + ','.join(horoscope_urls) + '}' if horoscope_urls else None
+        # # Convert lists to PostgreSQL array format
+        # photos_array = '{' + ','.join(photos_urls) + '}' if photos_urls else None
+        # horoscope_array = '{' + ','.join(horoscope_urls) + '}' if horoscope_urls else None
 
         # Convert empty strings to None
         values = tuple(convert_empty_to_none(v) for v in [
@@ -1519,6 +1556,7 @@ async def register_matrimony(
             preferred_caste, preferred_sub_caste, preferred_nakshatra,
             preferred_rashi, preferred_location, preferred_work_status,
             photo_url, photos_array, horoscope_array, dhosham, other_dhosham, quarter
+              
         ])
 
         # Database connection using settings
