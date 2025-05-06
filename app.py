@@ -534,6 +534,7 @@ def create_token(data: dict, expires_delta: timedelta, secret_key: str) -> str:
     expire = datetime.utcnow() + expires_delta
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, secret_key, algorithm=settings.ALGORITHM)
+
 # Function to create an access token
 def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
@@ -541,7 +542,6 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
-
 
 # Function to create a refresh token
 def create_refresh_token(data: dict, expires_delta: timedelta = None):
@@ -553,40 +553,18 @@ def create_refresh_token(data: dict, expires_delta: timedelta = None):
 
 
 # Function to store refresh token in the database
-async def store_refresh_token(conn, matrimony_id: str, refresh_token: str) -> None:
-    cur = conn.cursor()
+async def store_refresh_token(conn, matrimony_id: int, refresh_token: str):
     try:
-        # Insert the new refresh token before invalidating old ones
-        cur.execute(
-            """
-            INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at, is_valid)
-            VALUES (%s, %s, %s, true)
-            """,
-            (
-                matrimony_id,
-                refresh_token,
-                datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-            )
-        )
-        conn.commit()
-
-        # Invalidate old refresh tokens after successful insertion
-        cur.execute(
-            """
-            UPDATE matrimony_refresh_tokens 
-            SET is_valid = false 
-            WHERE matrimony_id = %s AND token != %s
-            """,
-            (matrimony_id, refresh_token),
-        )
-        conn.commit()
-
+        expires_at = datetime.datetime.utcnow() + datetime.timedelta(days=7)  # Token valid for 7 days
+        query = """
+        INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at, is_valid)
+        VALUES (%s, %s, %s, %s)
+        """
+        await conn.execute(query, (matrimony_id, refresh_token, expires_at, True))
     except Exception as e:
-        conn.rollback()
+        await conn.rollback()
+        print(f"❌ Error while storing refresh token: {e}")
         raise HTTPException(status_code=500, detail="Could not store refresh token")
-    finally:
-        cur.close()
-
 
 # Function to verify refresh token
 async def verify_refresh_token(refresh_token: str) -> Dict:
@@ -1638,6 +1616,7 @@ async def login_matrimony(
             # Validate phone number
             if request.phone_number != user["phone_number"]:
                 raise HTTPException(status_code=401, detail="Invalid phone number")
+            
 
         # Create access token
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1652,6 +1631,18 @@ async def login_matrimony(
             data={"sub": user["matrimony_id"], "user_type": "user"},  # Add user_type here
             expires_delta=refresh_token_expires
         )
+
+                # Save refresh token in the database
+        insert_query = """
+        INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (matrimony_id) DO UPDATE SET
+            token = EXCLUDED.token,
+            expires_at = EXCLUDED.expires_at
+        """
+        expires_at = datetime.now(timezone.utc) + refresh_token_expires
+        cur.execute(insert_query, (user["matrimony_id"], refresh_token, expires_at))
+        conn.commit()
 
         # Return tokens using the MatrimonyToken model
         return MatrimonyToken(
@@ -1736,32 +1727,50 @@ def increment_matrimony_id(request: IncrementMatrimonyIdRequest):
 @app.post("/matrimony/refresh-token", response_model=TokenResponse)
 async def matrimony_refresh_token(token: RefreshTokenRequest):
     logger.debug(f"Received refresh token: {token.refresh_token}")
+    conn = None
+    cur = None
+
     try:
-        # Verify token signature
-        payload = jwt.decode(token.refresh_token, settings.REFRESH_SECRET_KEY, aalgorithms=[settings.ALGORITHM])
+        # Decode JWT token
+        payload = jwt.decode(token.refresh_token, settings.REFRESH_SECRET_KEY, algorithms=[settings.ALGORITHM])
         logger.debug(f"Decoded refresh token payload: {payload}")
 
         matrimony_id = payload.get("sub")
         if not matrimony_id:
             raise HTTPException(status_code=401, detail="Invalid refresh token: missing user ID")
 
-        # Check token validity in the database
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    except Exception as e:
+        logger.error("JWT decode error:\n%s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Invalid token format")
+
+    try:
+        # DB operations (separate try block)
         conn = get_db_connection()
         cur = conn.cursor()
+
         cur.execute("SELECT is_valid FROM matrimony_refresh_tokens WHERE token = %s", (token.refresh_token,))
         db_token = cur.fetchone()
-        
+
         if not db_token or not db_token[0]:
             raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-        # Generate new tokens
+        # Generate and store new tokens
         access_token = create_access_token({"sub": matrimony_id, "user_type": "user"})
         new_refresh_token = create_refresh_token({"sub": matrimony_id, "user_type": "user"})
 
-        # Store the new refresh token in the database and invalidate the old one
         cur.execute("UPDATE matrimony_refresh_tokens SET is_valid = false WHERE token = %s", (token.refresh_token,))
-        cur.execute("INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at, is_valid) VALUES (%s, %s, %s, true)",
-                    (matrimony_id, new_refresh_token, datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)))
+        cur.execute("""
+            INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at, is_valid)
+            VALUES (%s, %s, %s, true)
+            ON CONFLICT (matrimony_id) DO UPDATE SET
+                token = EXCLUDED.token,
+                expires_at = EXCLUDED.expires_at,
+                is_valid = true
+        """, (matrimony_id, new_refresh_token, datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)))
         conn.commit()
 
         return {
@@ -1769,22 +1778,22 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
             "refresh_token": new_refresh_token,
             "token_type": "bearer"
         }
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Refresh token has expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    except HTTPException:
+        raise  # Re-raise exact HTTP errors
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        logger.error("Unexpected error in /matrimony/refresh-token:\n%s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Unexpected server error")
     finally:
-        if 'cur' in locals():
+        if cur:
             cur.close()
-        if 'conn' in locals():
+        if conn:
             conn.close()
 
 @app.get("/matrimony/profiles", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
-    language: str = Query("ta", description="Language for response (e.g., 'en', 'ta')")
+    language: Optional[str] = Query("en", description="Language for response (e.g., 'en', 'ta')")
 ):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -1812,11 +1821,11 @@ async def get_matrimony_profiles(
             return []
 
         translator = None
-        if language != "en":
+        if language and language.lower() != "en":
             try:
                 from googletrans import Translator
                 translator = Translator()
-                translator.translate("test", src="en", dest=language)  # test init
+                translator.translate("test", src="en", dest=language)
                 logger.info(f"Translator initialized for language: {language}")
             except Exception as e:
                 logger.error(f"Translator failed to initialize: {e}")
@@ -1826,6 +1835,7 @@ async def get_matrimony_profiles(
             if value and isinstance(value, str):
                 items = [item.strip() for item in value.replace("{", "").replace("}", "").split(',') if item.strip()]
                 return [
+                    item if item.startswith("http") else
                     f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
                     for item in items
                 ] if items else None
@@ -1840,7 +1850,6 @@ async def get_matrimony_profiles(
         for profile in profiles:
             profile_dict = dict(profile)
 
-            # Clean up empty strings and format dates
             for key, value in profile_dict.items():
                 if isinstance(value, str) and not value.strip():
                     profile_dict[key] = None
@@ -1856,18 +1865,19 @@ async def get_matrimony_profiles(
                 today = datetime.today()
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
-            # S3 file processing
+            # Handle photo_path
+            photo_path = profile_dict.get("photo_path")
             profile_dict["photo_path"] = (
-                f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{profile_dict['photo_path'].strip()}"
-                if profile_dict.get("photo_path") else "https://your-domain.com/static/default-profile.jpg"
+                photo_path if photo_path and photo_path.startswith("http") else
+                f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{photo_path.strip()}"
+                if photo_path else "https://your-domain.com/static/default-profile.jpg"
             )
 
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
-            # Translation
             profile_dict["is_translated"] = False
-            if translator and language != "en":
+            if translator and language.lower() != "en":
                 translatable_fields = [
                     "full_name", "occupation", "gender", "education", "mother_tongue", "dhosham", 
                     "work_type", "company", "work_location", "religion", "caste", "sub_caste"
@@ -1881,13 +1891,11 @@ async def get_matrimony_profiles(
                         except Exception as e:
                             logger.warning(f"Translation failed for {field}: {e}")
 
-                # Astrology-specific translation using static map
                 for astro_field in ["nakshatra", "rashi", "dhosham"]:
                     if profile_dict.get(astro_field):
                         profile_dict[astro_field] = translate_static_term(profile_dict[astro_field], language)
                         profile_dict["is_translated"] = True
 
-            # Model validation
             try:
                 result_profiles.append(MatrimonyProfileResponse(**profile_dict))
             except ValidationError as e:
@@ -1903,9 +1911,7 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
-
-
-        
+  
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
@@ -2457,6 +2463,7 @@ async def get_user_uploaded_files(
                         "user_selected_files": row[2],
                         "uploaded_at": row[3],
                         "id": row[4],
+                        "filename": row[5],
                         "category": category_value,
                         "private_files_id": private_files_id
                     }
