@@ -1,144 +1,327 @@
-#Updated photosudio - Admin (register, login, post, get, put -upload), User(login, get -upload) 
-import os
-import  sys 
-import logging
-import uvicorn
-
-
-import jwt
-from jwt.exceptions import PyJWTError, ExpiredSignatureError
-from jose import jwt, JWTError, ExpiredSignatureError
-from jose import JWTError
-
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
+import tempfile
+import bcrypt
+import re
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form
+from typing import Optional
+from fastapi.security import OAuth2PasswordBearer
+# from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, EmailStr, Field, ValidationError, ConfigDict, validator
+from passlib.context import CryptContext
+from contextlib import asynccontextmanager
 import psycopg2
 from psycopg2.extras import DictCursor, RealDictCursor
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form, Body
-from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, time, timedelta, date, timezone
 from typing import List, Optional, Dict, Any, Union
-
-from passlib.context import CryptContext
-from fastapi.security import OAuth2PasswordBearer
-from datetime import datetime, time, timedelta
+import jwt
+from jwt.exceptions import PyJWTError, ExpiredSignatureError
+from jose.exceptions import JWTError, ExpiredSignatureError
+import os
+from pathlib import Path
+import platform
+import shutil
+import uuid
+from uuid import uuid4
+import base64
+import logging
+import firebase_admin
+from firebase_admin import credentials, messaging
+from googletrans import Translator
+import random
+import json
+from twilio.rest import Client
+from dotenv import load_dotenv
+import traceback
+import logging
+import urllib.parse
 from app import (
-    UserCreate, 
-    UserLogin, 
-    Token,
-    RefreshToken,
     get_current_user, 
-    get_db_connection, 
-    settings, 
-    create_access_token, 
-    create_refresh_token,
-    S3Handler
-        
+    create_access_token,
+    create_refresh_token    
     )
 
-from dotenv import load_dotenv
 
-load_dotenv()
-
-
-app = FastAPI(title="Updated Photo Studio Endpoints")
+# Twilio credentials (hardcoded)
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# Initialize Twilio client
+twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+# Initialize FastAPI app with lifespan
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Code to run on startup
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Delete expired refresh tokens
+        cur.execute("DELETE FROM refresh_tokens WHERE expires_at <= NOW()")
+        conn.commit()
+        logger.info("Expired refresh tokens cleaned up")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error cleaning up expired refresh tokens: {str(e)}")
+    finally:
+        cur.close()
+        conn.close()
+    
+    # Ensure all necessary directories exist
+    (settings.UPLOAD_DIR / "photos").mkdir(parents=True, exist_ok=True)
+    (settings.UPLOAD_DIR / "horoscopes").mkdir(parents=True, exist_ok=True)
+    
+    yield  # The application is now running
+
+    # Code to run on shutdown (optional)
+    logger.info("Shutting down...")
+
+app = FastAPI(lifespan=lifespan, title="Photo Studio & Matrimony API", debug=True)
+
+# Check OS and set paths accordingly
+if platform.system() == "Windows":
+    uploads_dir = r"C:\Users\Premalatha\Desktop\NBS-Backend\uploads"
+    photos_dir = r"C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_photos"
+    horoscopes_dir = r"C:\Users\Premalatha\Desktop\NBS-Backend\myapp\uploaded_horoscopes"
+else:
+    uploads_dir = "/home/ubuntu/uploads"
+    photos_dir = "/home/ubuntu/myapp/uploaded_photos"
+    horoscopes_dir = "/home/ubuntu/myapp/uploaded_horoscopes"
+
+# Ensure the uploads directory exists
+Path(uploads_dir).mkdir(parents=True, exist_ok=True)
+
+# Mount static file routes
+app.mount("/static", StaticFiles(directory=uploads_dir), name="static")
+app.mount("/static/photos", StaticFiles(directory=photos_dir), name="static_photos")
+app.mount("/static/horoscopes", StaticFiles(directory=horoscopes_dir), name="static_horoscopes")
+
+# CORS middleware configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+load_dotenv(dotenv_path=Path(".env"), encoding="utf-8-sig")
+
+# Configuration
+class Settings:
+    PROJECT_NAME = "Photo Studio & Matrimony API"
+    VERSION = "1.0.0"
+    SECRET_KEY = "annularSecretKey"  # Hardcoded secret key
+    REFRESH_SECRET_KEY = "annularRefreshSecretKey"  # Hardcoded refresh secret key
+    ALGORITHM = "HS512"
+    ACCESS_TOKEN_EXPIRE_MINUTES = 30
+    REFRESH_TOKEN_EXPIRE_DAYS = 7
+    OTP_EXPIRE_MINUTES = 5
+    UPLOAD_DIR = Path("uploads")
+    DB_CONFIG ={
+    "dbname" : os.getenv("dbname"),
+    "user" : os.getenv("user"),
+    "password" : os.getenv("password"),
+    "host" : os.getenv("host"),
+    "port" : os.getenv("port")
+}
+    AWS_S3_BUCKET_NAME = "nbs-matrimonybucket1"  # Add this line
+    AWS_S3_REGION = "ap-south-1"  # Add this line
+
+settings = Settings()
+
+# Ensure all necessary directories exist
+(settings.UPLOAD_DIR / "photos").mkdir(parents=True, exist_ok=True)
+(settings.UPLOAD_DIR / "horoscopes").mkdir(parents=True, exist_ok=True)
+
 # Security
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# API Routes
-# Register
-@app.post("/photostudio/private/admin/register", response_model=Dict[str, Any])
-async def register(user: UserCreate):
-    logger.info(f"Received registration request: {user}")
-    conn = get_db_connection()
-    cur = conn.cursor()
+# # Set Firebase credentials path based on OS
+# if platform.system() == "Windows":
+#     firebase_cred_path = r"C:\Users\Premalatha\Desktop\NBS-Backend\myapp\cred\firebase.json"
+# else:
+#     firebase_cred_path = "/home/ubuntu/myapp/cred/firebase.json"
 
+# # Initialize Firebase
+# cred = credentials.Certificate(firebase_cred_path)
+# firebase_admin.initialize_app(cred)
+
+
+# Database connection
+def get_db_connection():
     try:
-        hashed_password = pwd_context.hash(user.password)
-
-        # Check if the user exists
-        cur.execute("SELECT id FROM users WHERE email = %s", (user.email,))
-        existing_user = cur.fetchone()
-
-        if existing_user:
-            user_id = existing_user[0]
-            # Update password, user_type, and set is_active = TRUE
-            cur.execute(
-                """
-                UPDATE users
-                SET password_hash = %s, user_type = %s, is_active = TRUE
-                WHERE id = %s
-                """,
-                (hashed_password, user.user_type, user_id)
+        # Access the individual settings from the DB_CONFIG attribute
+        db_config = settings.DB_CONFIG
+        
+        conn = psycopg2.connect(
+            dbname=db_config["dbname"],
+            user=db_config["user"],
+            password=db_config["password"],
+            host=db_config["host"],
+            port=db_config["port"]
+        )
+        
+        return conn
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database connection error: {str(e)}"
+        )
+# Generate 16-digit password login link
+@app.post("/photostudio/private/admin/generate-login-link", response_model=Dict[str, Any])
+async def generate_login_link(email: str):
+    logger.info(f"Generating login link for: {email}")
+    
+    if not email or not isinstance(email, str):
+        logger.warning(f"Invalid email parameter received: {email}")
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": "Invalid email format"}
+        )
+    
+    conn = None
+    cur = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            logger.error("Failed to establish database connection")
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "detail": "Database connection error"}
             )
-            is_active = True
-            message = "Existing user updated"
+            
+        cur = conn.cursor()
+        
+        # Check if user exists
+        cur.execute("SELECT id, user_type FROM users WHERE email = %s", (email,))
+        user = cur.fetchone()
+        
+        logger.debug(f"Database query result for email '{email}': {user}")
+
+        if not user:
+            logger.warning(f"User not found for email: {email}")
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error", "detail": "User not found"}
+            )
+
+        user_id, user_type = user
+
+        # Generate a secure 16-digit numeric token
+        secure_password = ''.join(random.choices('0123456789', k=16))
+        hashed_password = pwd_context.hash(secure_password)
+        expiry_time = datetime.utcnow() + timedelta(hours=24)
+
+        # Insert or update the login link
+        cur.execute("SELECT id FROM login_links WHERE user_id = %s", (user_id,))
+        existing_link = cur.fetchone()
+
+        if existing_link:
+            cur.execute("""
+                UPDATE login_links 
+                SET token_hash = %s, expires_at = %s, updated_at = NOW() 
+                WHERE user_id = %s
+            """, (hashed_password, expiry_time, user_id))
+            logger.debug(f"Updated existing login link for user ID {user_id}")
         else:
-            # Insert new user with is_active = FALSE
-            cur.execute(
-                """
-                INSERT INTO users (email, password_hash, user_type, is_active)
-                VALUES (%s, %s, %s, FALSE) RETURNING id
-                """,
-                (user.email, hashed_password, user.user_type)
-            )
-            user_id = cur.fetchone()[0]
-            is_active = False
-            message = "New user registered"
+            cur.execute("""
+                INSERT INTO login_links (user_id, token_hash, expires_at) 
+                VALUES (%s, %s, %s)
+            """, (user_id, hashed_password, expiry_time))
+            logger.debug(f"Created new login link for user ID {user_id}")
 
         conn.commit()
 
+        base_url = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+        login_link = f"{base_url}/photostudio/login-with-token?email={urllib.parse.quote(email)}&token={secure_password}"
+
+        logger.info(f"Login link generated for {email}, expires at {expiry_time}")
+
         return {
             "status": "success",
-            "message": message,
-            "data": {
-                "user_id": user_id,
-                "is_active": is_active
-            }
+            "login_link": login_link,
+            "expires_at": expiry_time,
+            "user_type": user_type
         }
 
+    except psycopg2.Error as db_error:
+        if conn:
+            conn.rollback()
+        logger.error(f"Database error generating login link: {str(db_error)}")
+        return JSONResponse(
+            status_code=500, 
+            content={"status": "error", "detail": "Database error occurred"}
+        )
     except Exception as e:
-        conn.rollback()
-        logger.error(f"Registration failed: {repr(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        if conn:
+            conn.rollback()
+        logger.error(f"Error generating login link: {str(e)}\n{traceback.format_exc()}")
+        return JSONResponse(
+            status_code=500, 
+            content={"status": "error", "detail": "Internal server error"}
+        )
     finally:
-        cur.close()
-        conn.close()
-
-
-# Login 
-@app.post("/photostudio/private/admin/login", response_model=Dict[str, Any])
-async def login (user: UserLogin):
-    logger.info(f"Received Login request: {user}")  # Log the request payload
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+        
+# Login with token endpoint (public)
+@app.post("/photostudio/public/login-with-token", response_model=Dict[str, Any])
+async def login_with_token(email: str, token: str):
+    logger.info(f"Login attempt with token for email: {email}")
+    
     conn = get_db_connection()
     cur = conn.cursor()
-
+    
     try:
+        # Get user ID from email
         cur.execute(
-            "SELECT id, email, password_hash, user_type FROM users WHERE email = %s",
-            (user.email,)
+            "SELECT id, email, user_type FROM users WHERE email = %s",
+            (email,)
         )
-        db_user = cur.fetchone()
+        user = cur.fetchone()
         
-        if not db_user or not pwd_context.verify(user.password, db_user[2]):
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid email or password"
-            )
+        if not user:
+            logger.warning(f"Invalid login: User not found for email {email}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        # Generate tokens
+        user_id, user_email, user_type = user
+        
+        # Verify token exists and is valid
+        cur.execute(
+            """
+            SELECT token_hash FROM login_links 
+            WHERE user_id = %s AND expires_at > %s
+            """,
+            (user_id, datetime.utcnow())
+        )
+        
+        token_record = cur.fetchone()
+        
+        if not token_record or not pwd_context.verify(token, token_record[0]):
+            logger.warning(f"Invalid login: Token verification failed for {email}")
+            raise HTTPException(status_code=401, detail="Invalid or expired login link")
+        
+        # Generate auth tokens
         access_token = create_access_token(
-            {"sub": db_user[1], "user_type": db_user[3]},  # Payload
-            timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)  # Expiry time
+            {"sub": user_email, "user_type": user_type},
+            timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         )
-
+        
         refresh_token = create_refresh_token(
-            {"sub": db_user[1], "user_type": db_user[3]},  # Include user_type in the payload
-            timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)  # Expiry time
+            {"sub": user_email, "user_type": user_type},
+            timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
         )
         
         # Store refresh token
@@ -148,451 +331,26 @@ async def login (user: UserLogin):
             VALUES (%s, %s, %s)
             """,
             (
-                refresh_token,
-                db_user[0],
+                refresh_token, 
+                user_id, 
                 datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
             )
-        )
+        )    
         conn.commit()
-        
+        logger.info(f"Successful login with token for {email}")
         return {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
-            "data": {            
-                "email": db_user[1],
-                "user_type": db_user[3]  # Include user_type in the response
+            "data": {
+                "email": user_email,
+                "user_type": user_type
             }
         }
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()    
-
-# Login Refresh_token
-
-
-@app.post("/photostudio/private/admin/refresh", response_model=Dict[str, Any])
-async def refresh_token(token: RefreshToken):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    try:
-        payload = jwt.decode(
-            token.refresh_token,
-            settings.REFRESH_SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
-        )
-        email = payload.get("sub")
-        if email is None:
-            logger.error("Invalid refresh token: missing email in payload")
-            raise HTTPException(status_code=401, detail="Invalid refresh token")
         
-        # Check if refresh token exists in DB
-        cur.execute(
-            """
-            SELECT user_id, expires_at
-            FROM refresh_tokens
-            WHERE token = %s AND expires_at > NOW()
-            """,
-            (token.refresh_token,)
-        )
-        db_token = cur.fetchone()
-        if not db_token:
-            logger.error("Invalid or expired refresh token")
-            raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
-        
-        # Fetch user info using user_id
-        cur.execute(
-            "SELECT id, email, user_type FROM users WHERE id = %s",
-            (db_token[0],)
-        )
-        db_user = cur.fetchone()
-        if not db_user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Generate new tokens
-        access_token = create_access_token(
-            {"sub": db_user[1], "user_type": db_user[2]},
-            timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-        )
-        new_refresh_token = create_refresh_token(
-            {"sub": db_user[1], "user_type": db_user[2]},
-            timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-        )
-        
-        # Store new refresh token
-        cur.execute(
-            """
-            INSERT INTO refresh_tokens (token, user_id, expires_at)
-            VALUES (%s, %s, %s)
-            """,
-            (
-                new_refresh_token,
-                db_user[0],
-                datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-            )
-        )
-
-        # Delete old refresh token
-        cur.execute(
-            "DELETE FROM refresh_tokens WHERE token = %s",
-            (token.refresh_token,)
-        )
-        conn.commit()
-
-        return {
-            "access_token": access_token,
-            "refresh_token": new_refresh_token,
-            "token_type": "bearer",
-            "email": db_user[1],
-            "user_type": db_user[2]
-        }
-    except JWTError:
-        logger.error("Invalid refresh token")
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
     except Exception as e:
         conn.rollback()
-        logger.error(f"Internal server error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Error logging in with token: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
     finally:
         cur.close()
-        conn.close()
-
-# Photo_File_upload - post (Photo, video, pdf, File_size upto 100 MB)
-@app.post("/photostudio/admin/private/fileupload", response_model=Dict[str, Any])
-async def admin_upload_files(
-    files: List[UploadFile] = File(...),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
-    
-    uploaded_files = []
-    s3_handler = S3Handler()
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    try:
-        print(f"Received {len(files)} files")
-
-        for file in files:
-            print(f"Processing file: {file.filename}")
-            
-            try:
-                file_url = s3_handler.upload_to_s3(file, "admin_files")
-                if not file_url:
-                    print(f"Skipping {file.filename} - S3 upload failed")
-                    continue
-            except Exception as e:
-                print(f"S3 Upload Error: {e}")
-                continue
-
-            file_type = file.content_type
-            try:
-                # Check if file already exists
-                cur.execute(
-                    """
-                    SELECT private_files_id FROM private_files
-                    WHERE filename = %s AND uploaded_by = %s
-                    """,
-                    (file.filename, current_user["id"])
-                )
-                existing = cur.fetchone()
-
-                if existing:
-                    cur.execute(
-                        """
-                        UPDATE private_files
-                        SET file_type = %s,
-                            file_url = array_append(file_url, %s),
-                            uploaded_at = NOW()
-                        WHERE private_files_id = %s
-                        RETURNING private_files_id;
-                        """,
-                        (file_type, file_url, existing[0])
-                    )
-                    file_id = existing  # ✅ Already have ID
-                else:
-                    cur.execute(
-                        """
-                        INSERT INTO private_files (filename, file_type, file_url, uploaded_by, uploaded_at)
-                        VALUES (%s, %s, ARRAY[%s], %s, NOW())
-                        RETURNING private_files_id;
-                        """,
-                        (file.filename, file_type, file_url, current_user["id"])
-                    )
-                    file_id = cur.fetchone()
-
-
-                if not file_id:
-                    print(f"Skipping {file.filename} - Database insert failed")
-                    continue
-
-                uploaded_files.append({
-                    "id": file_id[0],
-                    "File Details": {
-                        "filename": file.filename,
-                        "file_type": file_type,
-                        "uploaded_by": current_user["id"],
-                        "file_url": file_url
-                    }
-                })
-
-            except psycopg2.Error as e:
-                conn.rollback()
-                print(f"Database Error for {file.filename}: {str(e)}")
-                continue
-
-        conn.commit()
-
-        if not uploaded_files:
-            raise HTTPException(status_code=500, detail="No files were uploaded successfully")
-
-        return {
-            "message": "Files uploaded successfully by admin",
-            "file_urls": [file["File Details"]["file_url"] for file in uploaded_files],
-            "uploaded_files": uploaded_files
-        }
-
-    except Exception as e:
-        conn.rollback()
-        print(f"Unexpected Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-    finally:
-        cur.close()
-        conn.close()
-
-# Get Endpoint for file Upload
-@app.get("/photostudio/admin/private/get_files", response_model=List[Dict[str, Any]])
-def get_uploaded_files(
-    file_id: Optional[int] = None,
-    filename: Optional[str] = None,
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    try:
-        query = """
-            SELECT private_files_id, filename, file_type, file_url, uploaded_by, uploaded_at
-            FROM private_files
-            WHERE uploaded_by = %s
-        """
-        params = [current_user["id"]]
-
-        if file_id:
-            query += " AND private_files_id = %s"
-            params.append(file_id)
-
-        if filename:
-            query += " AND filename = %s"
-            params.append(filename)
-
-        cur.execute(query, tuple(params))
-        rows = cur.fetchall()
-
-        if not rows:
-            return []
-
-        return [
-            {
-                "id": row[0],
-                "filename": row[1],
-                "file_type": row[2],
-                "file_urls": row[3],
-                "uploaded_by": row[4],
-                "uploaded_at": row[5].isoformat()
-            }
-            for row in rows
-        ]
-
-    finally:
-        cur.close()
-        conn.close()
-
-# Put for File_Upload
-@app.put("/photostudio/admin/private/fileupdate/{file_id}", response_model=Dict[str, Any])
-async def update_uploaded_file(
-    file_id: int,
-    file: UploadFile = File(...),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    s3_handler = S3Handler()
-
-    try:
-        # Check ownership
-        cur.execute(
-            "SELECT uploaded_by FROM private_files WHERE private_files_id = %s",
-            (file_id,)
-        )
-        row = cur.fetchone()
-
-        if not row:
-            raise HTTPException(status_code=404, detail="File record not found")
-        if row[0] != current_user["id"]:
-            raise HTTPException(status_code=403, detail="You cannot update files uploaded by others")
-
-        # Upload new file to S3
-        new_file_url = s3_handler.upload_to_s3(file, "admin_files")
-        file_type = file.content_type
-
-        # Replace last URL in array
-        cur.execute(
-            """
-            UPDATE private_files
-            SET file_type = %s,
-                file_url = array_append(file_url, %s),
-                uploaded_at = NOW()
-            WHERE private_files_id = %s
-            RETURNING filename, file_type, file_url;
-            """,
-            (file_type, new_file_url, file_id)
-        )
-
-        updated = cur.fetchone()
-        conn.commit()
-
-        return {
-            "message": "File updated successfully",
-            "updated_file": {
-                "id": file_id,
-                "filename": updated[0],
-                "file_type": updated[1],
-                "file_urls": updated[2]
-            }
-        }
-
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
-
-    finally:
-        cur.close()
-        conn.close()
-
-# Delete for File_Upload
-@app.delete("/photostudio/admin/private/filedelete/{file_id}", response_model=Dict[str, Any])
-async def delete_uploaded_file(
-    file_id: int,
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    s3_handler = S3Handler()
-
-    try:
-        # Check ownership and get file URLs
-        cur.execute(
-            "SELECT uploaded_by, file_url FROM private_files WHERE private_files_id = %s",
-            (file_id,)
-        )
-        row = cur.fetchone()
-
-        if not row:
-            raise HTTPException(status_code=404, detail="File record not found")
-        if row[0] != current_user["id"]:
-            raise HTTPException(status_code=403, detail="You cannot delete files uploaded by others")
-
-        file_urls = row[1]
-
-        # Optionally delete files from S3
-        for url in file_urls:
-            s3_handler.delete_from_s3(url)  # You need to implement this method in S3Handler
-
-        # Delete file record from DB
-        cur.execute(
-            "DELETE FROM private_files WHERE private_files_id = %s",
-            (file_id,)
-        )
-        conn.commit()
-
-        return {
-            "message": "File deleted successfully",
-            "file_id": file_id
-        }
-
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
-
-    finally:
-        cur.close()
-        conn.close()
-
-# Admin-product_frame
-@app.post("/photostudio/admin/product_frame", response_model=Dict[str, Any])
-async def create_admin_product_frame(
-    frame_name: str = Form(...),
-    phone_number: str = Form(...),
-    user_photos: List[UploadFile] = File(...),
-    frame_size: str = Form(...),
-    frame_colors: List[UploadFile] = File(...),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    s3_handler = S3Handler()
-
-    try:
-        # Upload images to S3
-        user_photo_urls = [s3_handler.upload_to_s3(photo, "admin_user_photos") for photo in user_photos]
-        frame_color_urls = [s3_handler.upload_to_s3(color, "admin_frame_colors") for color in frame_colors]
-
-        # Insert into database
-        cur.execute(
-            """
-            INSERT INTO product_frames (
-                frame_name, phone_number, frame_size,
-                user_photo_urls, frame_color_urls, uploaded_by, uploaded_by_type
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
-            """,
-            (
-                frame_name, phone_number, frame_size,
-                user_photo_urls, frame_color_urls,
-                current_user["id"], "admin"
-            )
-        )
-        frame_id = cur.fetchone()[0]
-        conn.commit()
-
-        return {
-            "frame_id": frame_id,
-            "frame_name": frame_name,
-            "phone_number": phone_number,
-            "frame_size": frame_size,
-            "user_photo_urls": user_photo_urls,
-            "frame_color_urls": frame_color_urls,
-            "uploaded_by": current_user["id"]
-        }
-
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
-    finally:
-        cur.close()
-        conn.close()
-
-
-if __name__ == "__main__":
-    uvicorn.run("photostudio:app", host="0.0.0.0", port=8000, reload=True)

@@ -2407,8 +2407,6 @@ async def admin_upload_files(
         cur.close()
         conn.close()
 
-from fastapi import Query
-
 @app.get("/photostudio/admin/private/get_files", response_model=Dict[str, Any])
 async def get_user_uploaded_files(
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -2433,12 +2431,19 @@ async def get_user_uploaded_files(
 
         private_file_records = cur.fetchall()
 
+        # Log the records to see what data is returned
+        print(f"Private file records: {private_file_records}")
+
         if not private_file_records:
             return {"message": "No selected files found", "selected_files": []}
 
         all_files_data = []
 
-        for private_files_id, category_value in private_file_records:
+        for record in private_file_records:
+            if len(record) < 2:  # Ensure the record has both expected columns
+                continue
+            private_files_id, category_value = record
+
             # Step 2: If file_id is provided, filter by it
             query = """
                 SELECT file_url, file_type, user_selected_files, uploaded_at, id
@@ -2463,7 +2468,6 @@ async def get_user_uploaded_files(
                         "user_selected_files": row[2],
                         "uploaded_at": row[3],
                         "id": row[4],
-                        "filename": row[5],
                         "category": category_value,
                         "private_files_id": private_files_id
                     }
@@ -2486,6 +2490,7 @@ async def get_user_uploaded_files(
     finally:
         cur.close()
         conn.close()
+
 
 @app.put("/photostudio/admin/private/fileupdate", response_model=Dict[str, Any])
 async def update_uploaded_file(
