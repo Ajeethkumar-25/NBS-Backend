@@ -242,7 +242,7 @@ async def generate_login_link(email: str):
 
         conn.commit()
 
-        base_url = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+        base_url = os.getenv("BASE_URL", "http://localhost:3000")
         login_link = f"{base_url}/photostudio/login-with-token?email={urllib.parse.quote(email)}&token={secure_password}"
 
         logger.info(f"Login link generated for {email}, expires at {expiry_time}")

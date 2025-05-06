@@ -112,7 +112,7 @@ class Settings:
     SECRET_KEY = "annularSecretKey"  # Hardcoded secret key
     REFRESH_SECRET_KEY = "annularRefreshSecretKey"  # Hardcoded refresh secret key
     ALGORITHM = "HS512"
-    ACCESS_TOKEN_EXPIRE_MINUTES = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES = 1
     REFRESH_TOKEN_EXPIRE_DAYS = 7
     OTP_EXPIRE_MINUTES = 5
     UPLOAD_DIR = Path("uploads")
@@ -2431,19 +2431,12 @@ async def get_user_uploaded_files(
 
         private_file_records = cur.fetchall()
 
-        # Log the records to see what data is returned
-        print(f"Private file records: {private_file_records}")
-
         if not private_file_records:
             return {"message": "No selected files found", "selected_files": []}
 
         all_files_data = []
 
-        for record in private_file_records:
-            if len(record) < 2:  # Ensure the record has both expected columns
-                continue
-            private_files_id, category_value = record
-
+        for private_files_id, category_value in private_file_records:
             # Step 2: If file_id is provided, filter by it
             query = """
                 SELECT file_url, file_type, user_selected_files, uploaded_at, id
@@ -2490,7 +2483,6 @@ async def get_user_uploaded_files(
     finally:
         cur.close()
         conn.close()
-
 
 @app.put("/photostudio/admin/private/fileupdate", response_model=Dict[str, Any])
 async def update_uploaded_file(
