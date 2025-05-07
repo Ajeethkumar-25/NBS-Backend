@@ -300,8 +300,9 @@ class MatrimonyRegisterResponse(BaseModel):
 # Matrimony Login
 class MatrimonyLoginRequest(BaseModel):
     matrimony_id: str  # Unique ID for the user
-    password: Optional[str] = None  # Password (optional if phone_number is provided)
-    phone_number: Optional[str] = None  # Phone number (optional if password is provided)
+    password: Optional[str] = None  
+    phone_number: Optional[str] = None  
+    via_link: Optional[bool] = False
 
 # Model for login request
 class MatrimonyToken(BaseModel):
@@ -1444,6 +1445,7 @@ async def register_matrimony(
     ascendent: Optional[str] = Form(None),
     dhosham: Optional[str] = Form(None),
     user_type: Optional[str] = Form(None),
+    marital_status:Optional[str]=Form(None),
     preferred_age_min: Optional[str] = Form(None),
     preferred_age_max: Optional[str] = Form(None),
     preferred_height_min: Optional[str] = Form(None),
@@ -1533,7 +1535,7 @@ async def register_matrimony(
             preferred_height_min, preferred_height_max, preferred_religion,
             preferred_caste, preferred_sub_caste, preferred_nakshatra,
             preferred_rashi, preferred_location, preferred_work_status,
-            photo_url, photos_array, horoscope_array, dhosham, other_dhosham, quarter
+            photo_url, photos_array, horoscope_array, dhosham, other_dhosham, quarter, marital_status
               
         ])
 
@@ -1556,10 +1558,11 @@ async def register_matrimony(
             preferred_religion, preferred_caste, preferred_sub_caste,
             preferred_nakshatra, preferred_rashi, preferred_location,
             preferred_work_status, photo_path, photos, 
-            horoscope_documents, dhosham, other_dhosham, quarter
+            horoscope_documents, dhosham, other_dhosham, quarter, marital_status
         ) VALUES (
-            {','.join(['%s'] * len(values))}
-        ) RETURNING matrimony_id
+                {','.join(['%s'] * len(values))}
+            ) ON CONFLICT (email) DO NOTHING
+            RETURNING matrimony_id
         """
 
         cur.execute(query, values)
@@ -1569,7 +1572,9 @@ async def register_matrimony(
         return {
             "status": "success",
             "message": "Profile registered successfully",
-            "matrimony_id": result["matrimony_id"] if result else matrimony_id
+            "matrimony_id": result["matrimony_id"] if result else matrimony_id,
+            "email": email,
+            "password": password
         }
 
     except psycopg2.Error as e:
@@ -1581,70 +1586,75 @@ async def register_matrimony(
         conn.close()
         
 @app.post("/matrimony/login", response_model=MatrimonyToken)
-async def login_matrimony(
-    request: MatrimonyLoginRequest
-):
+async def login_matrimony(request: MatrimonyLoginRequest):
     try:
-        # Validate input: Either password or phone_number must be provided
+        print("Login request received:", request.dict())
+
         if not request.password and not request.phone_number:
             raise HTTPException(
                 status_code=400,
                 detail="Either password or phone_number must be provided",
             )
 
-        # Connect to the database
+        # Connect to DB
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Query to fetch user details based on matrimony_id
-        query = """
-        SELECT * FROM matrimony_profiles
-        WHERE matrimony_id = %s
-        """
-        cur.execute(query, (request.matrimony_id,))
+        # Fetch user by matrimony_id
+        cur.execute(
+            "SELECT * FROM matrimony_profiles WHERE matrimony_id = %s",
+            (request.matrimony_id,)
+        )
         user = cur.fetchone()
+        print("Fetched user:", user)
 
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Validate credentials based on input
-        if request.password:
-            # Validate password
-            if not pwd_context.verify(request.password, user["password"]):
-                raise HTTPException(status_code=401, detail="Invalid password")
-        elif request.phone_number:
-            # Validate phone number
-            if request.phone_number != user["phone_number"]:
-                raise HTTPException(status_code=401, detail="Invalid phone number")
-            
+        stored_password = user.get("password")
+        stored_phone = user.get("phone_number")
 
-        # Create access token
+        # Authentication logic
+        if request.via_link:
+            if not request.password:
+                raise HTTPException(status_code=400, detail="Password is required for link login")
+            if not stored_password or not pwd_context.verify(request.password, stored_password):
+                raise HTTPException(status_code=401, detail="Invalid password for link login")
+        else:
+            if request.password:
+                if not stored_password or not pwd_context.verify(request.password, stored_password):
+                    raise HTTPException(status_code=401, detail="Invalid password")
+            elif request.phone_number:
+                if request.phone_number != stored_phone:
+                    raise HTTPException(status_code=401, detail="Invalid phone number")
+            else:
+                raise HTTPException(status_code=400, detail="Password or phone number is required")
+
+        # Token creation
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user["matrimony_id"], "user_type": "user"},  # Add user_type here
+            data={"sub": user["matrimony_id"], "user_type": "user"},
             expires_delta=access_token_expires
         )
 
-        # Create refresh token including the user_type
         refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
         refresh_token = create_refresh_token(
-            data={"sub": user["matrimony_id"], "user_type": "user"},  # Add user_type here
+            data={"sub": user["matrimony_id"], "user_type": "user"},
             expires_delta=refresh_token_expires
         )
 
-                # Save refresh token in the database
-        insert_query = """
-        INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (matrimony_id) DO UPDATE SET
-            token = EXCLUDED.token,
-            expires_at = EXCLUDED.expires_at
-        """
+        # Save refresh token
         expires_at = datetime.now(timezone.utc) + refresh_token_expires
-        cur.execute(insert_query, (user["matrimony_id"], refresh_token, expires_at))
+        cur.execute("""
+            INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (matrimony_id) DO UPDATE
+            SET token = EXCLUDED.token,
+                expires_at = EXCLUDED.expires_at
+        """, (user["matrimony_id"], refresh_token, expires_at))
         conn.commit()
 
-        # Return tokens using the MatrimonyToken model
+        print("Login successful. Returning tokens.")
         return MatrimonyToken(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -1652,9 +1662,11 @@ async def login_matrimony(
         )
 
     except psycopg2.Error as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
     finally:
         if 'cur' in locals():
             cur.close()
@@ -1865,17 +1877,6 @@ async def get_matrimony_profiles(
                 today = datetime.today()
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
-            # Handle photo_path
-            photo_path = profile_dict.get("photo_path")
-            profile_dict["photo_path"] = (
-                photo_path if photo_path and photo_path.startswith("http") else
-                f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{photo_path.strip()}"
-                if photo_path else "https://your-domain.com/static/default-profile.jpg"
-            )
-
-            profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
-            profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
-
             profile_dict["is_translated"] = False
             if translator and language.lower() != "en":
                 translatable_fields = [
@@ -2060,58 +2061,6 @@ async def send_notification(
     return send_push_notification(token, title, body)
 
 
-#Updated photosudio - Admin (register, login, post, get, put -upload), User(login, get -upload) 
-# import os
-# import  sys 
-# import logging
-# import uvicorn
-
-
-# import jwt
-# from jwt.exceptions import PyJWTError, ExpiredSignatureError
-# from jose import jwt, JWTError, ExpiredSignatureError
-# from jose import JWTError
-
-# import psycopg2
-# from psycopg2.extras import DictCursor, RealDictCursor
-# from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form, Body
-# from fastapi.middleware.cors import CORSMiddleware
-# from typing import List, Optional, Dict, Any, Union
-
-# from passlib.context import CryptContext
-# from fastapi.security import OAuth2PasswordBearer
-# from datetime import datetime, time, timedelta
-# from app import (
-#     UserCreate, 
-#     UserLogin, 
-#     Token,
-#     RefreshToken,
-#     get_current_user, 
-#     get_db_connection, 
-#     settings, 
-#     create_access_token, 
-#     create_refresh_token,
-#     S3Handler
-        
-#     )
-
-# from dotenv import load_dotenv
-
-# load_dotenv()
-
-
-# app = FastAPI(title="Updated Photo Studio Endpoints")
-
-# # Logging
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger(__name__)
-
-
-# # Security
-# pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-# oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
-
-# API Routes
 # Register
 @app.post("/photostudio/private/admin/register", response_model=Dict[str, Any])
 async def register(user: UserCreate):
