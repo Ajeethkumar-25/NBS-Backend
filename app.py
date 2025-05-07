@@ -2108,7 +2108,9 @@ async def register(user: UserCreate):
             "message": message,
             "data": {
                 "user_id": user_id,
-                "is_active": is_active
+                "is_active": is_active,
+                "email": user.email,
+                "password": user.password
             }
         }
 
