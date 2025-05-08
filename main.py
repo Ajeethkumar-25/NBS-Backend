@@ -11,7 +11,9 @@ from app import (
     create_admin_product_frame,
     create_event_form,
     create_product_frame,
-    get_product_frames
+    get_product_frames,
+    get_user_uploaded_files
+
     )
 
 from matrimony import (
@@ -63,7 +65,7 @@ app.post("/photostudio/private/admin/register")(register)
 app.post("/photostudio/private/admin/login")(login)
 app.post("/photostudio/private/admin/refresh")(refresh_token)
 app.post("/photostudio/admin/private/fileupload")(admin_upload_files)
-app.get("/photostudio/admin/private/get_files")(get_uploaded_files)
+app.get("/photostudio/admin/private/get_files")(get_user_uploaded_files)
 app.put("/photostudio/admin/private/fileupdate/{file_id}")(update_uploaded_file)
 app.delete("/photostudio/admin/private/filedelete/{file_id}")(delete_uploaded_file)
 app.post("/photostudio/admin/product_frame")(create_admin_product_frame)
