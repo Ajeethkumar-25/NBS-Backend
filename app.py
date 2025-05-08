@@ -112,7 +112,7 @@ class Settings:
     SECRET_KEY = "annularSecretKey"  # Hardcoded secret key
     REFRESH_SECRET_KEY = "annularRefreshSecretKey"  # Hardcoded refresh secret key
     ALGORITHM = "HS512"
-    ACCESS_TOKEN_EXPIRE_MINUTES = 1
+    ACCESS_TOKEN_EXPIRE_MINUTES = 120
     REFRESH_TOKEN_EXPIRE_DAYS = 7
     OTP_EXPIRE_MINUTES = 5
     UPLOAD_DIR = Path("uploads")
@@ -125,8 +125,7 @@ class Settings:
 }
     AWS_S3_BUCKET_NAME = "nbs-matrimonybucket1"  # Add this line
     AWS_S3_REGION = "ap-south-1"  # Add this line
-
-
+    
 settings = Settings()
 
 # Ensure all necessary directories exist
