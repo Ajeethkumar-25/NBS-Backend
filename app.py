@@ -443,7 +443,6 @@ class S3Handler:
         self.aws_secret_key = os.getenv("aws_secret_key")
         self.region = os.getenv("region")
         self.bucket_name = os.getenv("bucket_name")
-
         self.s3_client = boto3.client(
             's3',
             aws_access_key_id=self.aws_access_key,
@@ -454,13 +453,12 @@ class S3Handler:
     def upload_to_s3(self, file: UploadFile, folder: str) -> str:
         """Uploads a file to S3 and returns the file URL."""
         try:
-            filename = file.filename.strip().replace(" ", "_")  # Clean filename
-            s3_key = f"{folder}/{filename}"  # Ensure correct folder structure
+            filename = file.filename.strip().replace(" ", "_")
+            s3_key = f"{folder}/{filename}"
 
-            # Upload the file to S3
+            file.file.seek(0)  # ⚠️ Important fix
             self.s3_client.upload_fileobj(file.file, self.bucket_name, s3_key, ExtraArgs={'ContentType': file.content_type})
 
-            # Generate and return the file URL
             file_url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{s3_key}"
             logging.info(f"File uploaded successfully: {file_url}")
             return file_url
@@ -468,10 +466,11 @@ class S3Handler:
         except NoCredentialsError:
             logging.error("AWS credentials not found.")
             raise HTTPException(status_code=500, detail="AWS credentials not found.")
-        
+
         except ClientError as e:
             logging.error(f"Failed to upload {filename}: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to upload {filename}: {str(e)}")
+
 
     def list_files_in_s3(self, folder: str):
         """Lists all files inside the specified S3 folder."""
@@ -2217,23 +2216,20 @@ async def register_matrimony(
 
 ):
     try:
-        # Initialize S3 Handler
         s3_handler = S3Handler()
-
-        # Hash password
         hashed_password = pwd_context.hash(password)
 
-        # Process profile photo
+        # Handle single profile photo
         photo_url = None
-        if photo_path:
+        if photo:
             try:
-                photo_url = s3_handler.upload_to_s3(photo_path, "profile_photos")
+                photo_url = s3_handler.upload_to_s3(photo, "profile_photos")
                 logger.info(f"Profile photo uploaded to: {photo_url}")
             except Exception as e:
                 logger.error(f"Profile photo upload failed: {str(e)}")
                 raise HTTPException(status_code=400, detail="Profile photo upload failed")
 
-        # Process multiple photos
+        # Handle multiple photos
         photos_urls = []
         if photos:
             for p in photos:
@@ -2245,7 +2241,7 @@ async def register_matrimony(
                     logger.error(f"Photo upload failed: {str(e)}")
                     continue
 
-        # Process horoscope documents
+        # Handle horoscope documents
         horoscope_urls = []
         if horoscope_documents:
             for h in horoscope_documents:
@@ -2257,24 +2253,14 @@ async def register_matrimony(
                     logger.error(f"Horoscope upload failed: {str(e)}")
                     continue
 
-        # Convert to PostgreSQL array format
         def format_array(urls):
             return "{" + ",".join(urls) + "}" if urls else None
 
         photos_array = format_array(photos_urls)
         horoscope_array = format_array(horoscope_urls)
 
-        # Debug logging
-        logger.info(f"Files processed - Profile: {photo_url}, Photos: {photos_array}, Horoscopes: {horoscope_array}")
+        matrimony_id = matrimony_id or generate_matrimony_id()
 
-        # Generate Matrimony ID
-        matrimony_id = generate_matrimony_id()
-
-        # # Convert lists to PostgreSQL array format
-        # photos_array = '{' + ','.join(photos_urls) + '}' if photos_urls else None
-        # horoscope_array = '{' + ','.join(horoscope_urls) + '}' if horoscope_urls else None
-
-        # Convert empty strings to None
         values = tuple(convert_empty_to_none(v) for v in [
             matrimony_id, full_name, age, gender, date_of_birth,
             email, hashed_password, phone_number, height, weight,
@@ -2289,14 +2275,11 @@ async def register_matrimony(
             preferred_caste, preferred_sub_caste, preferred_nakshatra,
             preferred_rashi, preferred_location, preferred_work_status,
             photo_url, photos_array, horoscope_array, dhosham, other_dhosham, quarter, marital_status
-              
         ])
 
-        # Database connection using settings
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Insert into DB
         query = f"""
         INSERT INTO matrimony_profiles (
             matrimony_id, full_name, age, gender, date_of_birth,
@@ -2313,9 +2296,9 @@ async def register_matrimony(
             preferred_work_status, photo_path, photos, 
             horoscope_documents, dhosham, other_dhosham, quarter, marital_status
         ) VALUES (
-                {','.join(['%s'] * len(values))}
-            ) ON CONFLICT (email) DO NOTHING
-            RETURNING matrimony_id
+            {','.join(['%s'] * len(values))}
+        ) ON CONFLICT (email) DO NOTHING
+        RETURNING matrimony_id;
         """
 
         cur.execute(query, values)
@@ -2335,8 +2318,10 @@ async def register_matrimony(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
         
 @app.post("/matrimony/login", response_model=MatrimonyToken)
 async def login_matrimony(request: MatrimonyLoginRequest):
@@ -2595,16 +2580,37 @@ async def get_matrimony_profiles(
             except Exception as e:
                 logger.error(f"Translator failed to initialize: {e}")
                 translator = None
+        def process_s3_url(url, folder_name):
+            """Process a single S3 URL"""
+            if url and isinstance(url, str):
+                if url.startswith("http"):
+                    return url
+                else:
+                    return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+            return None
 
         def process_s3_urls(value, folder_name):
-            if value and isinstance(value, str):
-                items = [item.strip() for item in value.replace("{", "").replace("}", "").split(',') if item.strip()]
-                return [
-                    item if item.startswith("http") else
-                    f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
-                    for item in items
-                ] if items else None
-            return None
+            """Process a list of S3 URLs from the database array format"""
+            if not value:
+                return None
+                
+            # Handle both string representation of array and actual list
+            if isinstance(value, str):
+                # Remove curly braces and split by comma
+                items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
+            elif isinstance(value, list):
+                items = value
+            else:
+                return None
+                
+            if not items:
+                return None
+                
+            return [
+                item if item.startswith("http") else
+                f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
+                for item in items
+            ]
 
         def translate_static_term(term: str, lang: str) -> str:
             key = term.strip().lower().replace(" ", "_")
@@ -2618,6 +2624,18 @@ async def get_matrimony_profiles(
             for key, value in profile_dict.items():
                 if isinstance(value, str) and not value.strip():
                     profile_dict[key] = None
+
+            # Process photo URL
+            if profile_dict.get("photo_path"):
+                profile_dict["photo"] = process_s3_url(profile_dict["photo_path"], "profile_photos")
+            else:
+                profile_dict["photo"] = None
+
+            # Process photos array
+            profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
+            
+            # Process horoscope documents array
+            profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
             if isinstance(profile_dict.get("birth_time"), time):
                 profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
@@ -2665,7 +2683,7 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
-  
+
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
