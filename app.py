@@ -992,6 +992,34 @@ async def create_event_form(
         cur.close()
         conn.close()
 
+@app.get("/photostudio/admin/eventform", response_model=List[Dict[str, Any]])
+async def get_event_forms():
+    """
+    Retrieve all event forms
+    :return: List of event forms
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT name, contact, event_date, event_time, event_type, 
+                   created_at  
+            FROM event_forms
+            ORDER BY created_at DESC
+        """)
+        rows = cur.fetchall()
+
+        # Convert list of tuples to list of dicts
+        columns = [desc[0] for desc in cur.description]
+        event_forms = [dict(zip(columns, row)) for row in rows]
+
+        return event_forms
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving event forms: {str(e)}")
+    finally:
+        cur.close()
+        conn.close()
+        
 @app.post("/photostudio/refresh-token", response_model=Token)
 async def refresh_token(token: RefreshToken):
     conn = get_db_connection()
