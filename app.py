@@ -112,7 +112,7 @@ class Settings:
     SECRET_KEY = "annularSecretKey"  # Hardcoded secret key
     REFRESH_SECRET_KEY = "annularRefreshSecretKey"  # Hardcoded refresh secret key
     ALGORITHM = "HS512"
-    ACCESS_TOKEN_EXPIRE_MINUTES = 120
+    ACCESS_TOKEN_EXPIRE_MINUTES = 1
     REFRESH_TOKEN_EXPIRE_DAYS = 7
     OTP_EXPIRE_MINUTES = 5
     UPLOAD_DIR = Path("uploads")
@@ -2225,9 +2225,9 @@ async def register_matrimony(
 
         # Process profile photo
         photo_url = None
-        if photo:
+        if photo_path:
             try:
-                photo_url = s3_handler.upload_to_s3(photo, "profile_photos")
+                photo_url = s3_handler.upload_to_s3(photo_path, "profile_photos")
                 logger.info(f"Profile photo uploaded to: {photo_url}")
             except Exception as e:
                 logger.error(f"Profile photo upload failed: {str(e)}")
