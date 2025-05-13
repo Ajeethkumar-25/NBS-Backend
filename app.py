@@ -98,7 +98,7 @@ app.mount("/static/horoscopes", StaticFiles(directory=horoscopes_dir), name="sta
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://admin.newbrindha.com/", "https://newbrindha.com/"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -112,7 +112,7 @@ class Settings:
     SECRET_KEY = "annularSecretKey"  # Hardcoded secret key
     REFRESH_SECRET_KEY = "annularRefreshSecretKey"  # Hardcoded refresh secret key
     ALGORITHM = "HS512"
-    ACCESS_TOKEN_EXPIRE_MINUTES = 1
+    ACCESS_TOKEN_EXPIRE_MINUTES = 120
     REFRESH_TOKEN_EXPIRE_DAYS = 7
     OTP_EXPIRE_MINUTES = 5
     UPLOAD_DIR = Path("uploads")
@@ -864,38 +864,40 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Routes
-
 @app.post("/photostudio/admin/register", response_model=Dict[str, Any])
 async def register(user: UserCreate):
-    logger.info(f"Received registration request: {user}")  # Log the request payload
+    logger.info(f"Received registration request: {user}")
     conn = get_db_connection()
     cur = conn.cursor()
-    
+
     try:
         # Check existing user
         cur.execute("SELECT id FROM users WHERE email = %s", (user.email,))
         if cur.fetchone():
+            logger.warning(f"Email already registered: {user.email}")
             raise HTTPException(status_code=400, detail="Email already registered")
         
         # Create new user
         hashed_password = pwd_context.hash(user.password)
         cur.execute(
             "INSERT INTO users (email, password_hash, user_type) VALUES (%s, %s, %s) RETURNING id",
-            (user.email, hashed_password, user.user_type)  # Default gender
+            (user.email, hashed_password, user.user_type)
         )
         user_id = cur.fetchone()[0]
         conn.commit()
-        
+
         return {
             "message": "Registration successful",
             "user_id": user_id
         }
     except Exception as e:
+        logger.error(f"Error occurred during registration: {str(e)}")
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
     finally:
         cur.close()
         conn.close()
+
 
 @app.post("/photostudio/admin/login", response_model=Token)
 async def login(user: UserLogin):
@@ -1019,7 +1021,7 @@ async def get_event_forms():
     finally:
         cur.close()
         conn.close()
-        
+
 @app.post("/photostudio/refresh-token", response_model=Token)
 async def refresh_token(token: RefreshToken):
     conn = get_db_connection()
@@ -1877,7 +1879,7 @@ async def delete_files_by_private_id(
 # Selected Files
 @app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
 async def user_select_files(
-    request: FileSelectionsRequest,  # Use the new model
+    request: FileSelectionsRequest,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
@@ -1888,62 +1890,49 @@ async def user_select_files(
 
     try:
         updated_records = []
-        
-        # Loop through each private_files_id and selected_urls
-        for file_data in request.private_files:
-            private_files_id = file_data.private_files_id  # Access the private_files_id directly
-            selected_urls = file_data.selected_urls  # Access selected_urls directly
 
-            # Step 1: Fetch category for this private_files_id
-            cur.execute(
-                """
+        for file_data in request.private_files:
+            private_files_id = file_data.private_files_id
+            selected_urls = file_data.selected_urls
+
+            # Step 1: Fetch category
+            cur.execute("""
                 SELECT category FROM private_files
                 WHERE private_files_id = %s
-                """,
-                (private_files_id,)
-            )
+            """, (private_files_id,))
             result = cur.fetchone()
             if not result:
                 raise HTTPException(status_code=404, detail=f"Invalid private_files_id: {private_files_id}")
             category = result[0]
 
-            # Step 2: Fetch all file URLs under this private_files_id
-            cur.execute(
-                """
+            # Step 2: Fetch file URLs
+            cur.execute("""
                 SELECT id, file_url, user_selected_files FROM private_files_url
                 WHERE private_files_id = %s
-                """,
-                (private_files_id,)
-            )
+            """, (private_files_id,))
             all_files = cur.fetchall()
 
-            # Step 3: Update the selection status for each file
+            # Step 3: Update selection
             for fid, url, existing_selection in all_files:
                 is_selected = url in selected_urls
                 updated_selection = json.dumps({"selected": is_selected})
 
-                # Update the file's selection status
-                cur.execute(
-                    """
+                cur.execute("""
                     UPDATE private_files_url
                     SET user_selected_files = %s
                     WHERE id = %s
                     RETURNING id, file_url, user_selected_files
-                    """,
-                    (updated_selection, fid)
-                )
+                """, (updated_selection, fid))
                 record = cur.fetchone()
-                updated_records.append((record[0], record[1], record[2], category))  # Include category here
-
+                updated_records.append((record[0], record[1], record[2], category))
 
         conn.commit()
 
-        # Prepare updated file details for the response
         updated_result = [
             {
                 "file_id": row[0],
                 "file_url": row[1],
-                "selected_status": json.loads(row[2]),  # Deserialize the selection
+                "selected_status": row[2] if isinstance(row[2], dict) else json.loads(row[2]),
                 "category": row[3]
             }
             for row in updated_records
@@ -1951,7 +1940,6 @@ async def user_select_files(
 
         return {
             "message": "File selections updated successfully.",
-            # "category": category,
             "private_files_id": private_files_id,
             "updated_files": updated_result
         }
@@ -1977,40 +1965,32 @@ async def user_get_all_selected_files(
     cur = conn.cursor()
 
     try:
-        # Step 1: Fetch all private_files_ids and their associated categories
-        cur.execute(
-            """
+        # Step 1: Fetch file IDs and categories
+        cur.execute("""
             SELECT private_files_id, category FROM private_files
             WHERE uploaded_by = %s
-            """,
-            (current_user["id"],)  # Filter by the current user
-        )
+        """, (current_user["id"],))
         private_files = cur.fetchall()
 
-        # Step 2: Prepare the result for each private_files_id
         all_files_result = []
 
         for private_files_id, category in private_files:
-            # Fetch all file URLs and user-selected status for this private_files_id
-            cur.execute(
-                """
+            # Step 2: Fetch file URLs
+            cur.execute("""
                 SELECT id, file_url, user_selected_files FROM private_files_url
                 WHERE private_files_id = %s
-                """,
-                (private_files_id,)
-            )
+            """, (private_files_id,))
             all_files = cur.fetchall()
 
             updated_result = [
                 {
                     "file_id": row[0],
                     "file_url": row[1],
-                    "selected_status": json.loads(row[2]) if row[2] else {}  # Deserialize the selection
+                    "selected_status": row[2] if isinstance(row[2], dict) else (json.loads(row[2]) if row[2] else {})
                 }
                 for row in all_files
             ]
 
-            # Append the results for this private_files_id
             all_files_result.append({
                 "category": category,
                 "private_files_id": private_files_id,
@@ -2029,6 +2009,7 @@ async def user_get_all_selected_files(
     finally:
         cur.close()
         conn.close()
+
 
 # Admin-product_frame
 @app.post("/photostudio/admin/product_frame", response_model=Dict[str, Any])
