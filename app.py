@@ -2589,8 +2589,8 @@ async def get_matrimony_profiles(
             except Exception as e:
                 logger.error(f"Translator failed to initialize: {e}")
                 translator = None
+
         def process_s3_url(url, folder_name):
-            """Process a single S3 URL"""
             if url and isinstance(url, str):
                 if url.startswith("http"):
                     return url
@@ -2599,22 +2599,16 @@ async def get_matrimony_profiles(
             return None
 
         def process_s3_urls(value, folder_name):
-            """Process a list of S3 URLs from the database array format"""
             if not value:
                 return None
-                
-            # Handle both string representation of array and actual list
             if isinstance(value, str):
-                # Remove curly braces and split by comma
                 items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
             elif isinstance(value, list):
                 items = value
             else:
                 return None
-                
             if not items:
                 return None
-                
             return [
                 item if item.startswith("http") else
                 f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
@@ -2634,22 +2628,16 @@ async def get_matrimony_profiles(
                 if isinstance(value, str) and not value.strip():
                     profile_dict[key] = None
 
-            # Process photo URL
-            if profile_dict.get("photo_path"):
-                profile_dict["photo"] = process_s3_url(profile_dict["photo_path"], "profile_photos")
-            else:
-                profile_dict["photo"] = None
-
-            # Process photos array
+            profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
-            
-            # Process horoscope documents array
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
+            # Birth_time
             if isinstance(profile_dict.get("birth_time"), time):
                 profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
-            if isinstance(profile_dict.get("date_of_birth"), datetime):
+            # Date_of_birth
+            if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                 profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
 
             if profile_dict.get("date_of_birth"):
@@ -2692,6 +2680,7 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
+
 
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
