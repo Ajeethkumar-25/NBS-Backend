@@ -1874,8 +1874,7 @@ async def delete_files_by_private_id(
     finally:
         cur.close()
         conn.close()
-
-
+        
 # Selected Files
 @app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
 async def user_select_files(
@@ -1941,6 +1940,7 @@ async def user_select_files(
         return {
             "message": "File selections updated successfully.",
             "private_files_id": private_files_id,
+            "uploaded_by": current_user["id"],
             "updated_files": updated_result
         }
 
@@ -1952,8 +1952,7 @@ async def user_select_files(
     finally:
         cur.close()
         conn.close()
-
-
+        
 @app.get("/photostudio/user/private/get_select_files", response_model=Dict[str, Any])
 async def user_get_all_selected_files(
     current_user: Dict[str, Any] = Depends(get_current_user)
@@ -1994,6 +1993,7 @@ async def user_get_all_selected_files(
             all_files_result.append({
                 "category": category,
                 "private_files_id": private_files_id,
+                "uploaded_by": current_user["id"],
                 "selected_files": updated_result
             })
 
@@ -2009,8 +2009,7 @@ async def user_get_all_selected_files(
     finally:
         cur.close()
         conn.close()
-
-
+        
 # Admin-product_frame
 @app.post("/photostudio/admin/product_frame", response_model=Dict[str, Any])
 async def create_admin_product_frame(
