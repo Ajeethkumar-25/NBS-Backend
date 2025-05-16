@@ -1949,14 +1949,10 @@ async def user_select_files(request: FileSelectionsRequest):
         cur.close()
         conn.close()
 
+
         
 @app.get("/photostudio/user/private/get_select_files", response_model=Dict[str, Any])
-async def user_get_all_selected_files(
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    if current_user.get("user_type") != "user":
-        raise HTTPException(status_code=403, detail="Only users can access this endpoint")
-
+async def user_get_all_selected_files(user_id: int = Query(...)):
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -1965,7 +1961,7 @@ async def user_get_all_selected_files(
         cur.execute("""
             SELECT private_files_id, category FROM private_files
             WHERE uploaded_by = %s
-        """, (current_user["id"],))
+        """, (user_id,))
         private_files = cur.fetchall()
 
         all_files_result = []
@@ -1990,7 +1986,7 @@ async def user_get_all_selected_files(
             all_files_result.append({
                 "category": category,
                 "private_files_id": private_files_id,
-                "uploaded_by": current_user["id"],
+                "uploaded_by": user_id,
                 "selected_files": updated_result
             })
 
