@@ -208,10 +208,11 @@ class FileUploadRequest(BaseModel):
     category: str
 
 class FileData(BaseModel):
-    private_files_id: int
+    private_files_id: Optional[int]
     selected_urls: List[str]
 
 class FileSelectionsRequest(BaseModel):
+    user_id: int
     private_files: List[FileData]
 
 # Define Pydantic model
@@ -1419,6 +1420,8 @@ async def login (user: UserLogin):
                 detail="Invalid email or password"
             )
         
+        user_id = db_user[0] 
+
         # Generate tokens
         access_token = create_access_token(
             {"sub": db_user[1], "user_type": db_user[3]},  # Payload
@@ -1438,7 +1441,7 @@ async def login (user: UserLogin):
             """,
             (
                 refresh_token,
-                db_user[0],
+                user_id,
                 datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
             )
         )
@@ -1448,7 +1451,8 @@ async def login (user: UserLogin):
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
-            "data": {            
+            "data": {    
+                "user_id": user_id,        
                 "email": db_user[1],
                 "user_type": db_user[3]  # Include user_type in the response
             }
@@ -1636,12 +1640,9 @@ async def admin_upload_files(
 
 @app.get("/photostudio/admin/private/get_files", response_model=Dict[str, Any])
 async def get_user_uploaded_files(
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    user_id: int = Query(..., alias="user_id"),
     file_id: int = Query(None, alias="file_id")  # Optional query parameter for file_id
 ):
-    if current_user.get("user_type") != "user":
-        raise HTTPException(status_code=403, detail="Only users can access this endpoint")
-
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -1653,7 +1654,7 @@ async def get_user_uploaded_files(
             FROM private_files 
             WHERE uploaded_by = %s
             """,
-            (current_user["id"],)
+            (user_id,)
         )
 
         private_file_records = cur.fetchall()
@@ -1676,7 +1677,6 @@ async def get_user_uploaded_files(
                 query += " AND id = %s"
                 params.append(file_id)
 
-            # Fetch the files based on the query
             cur.execute(query + " ORDER BY uploaded_at DESC", tuple(params))
             files = cur.fetchall()
 
@@ -1699,7 +1699,7 @@ async def get_user_uploaded_files(
             raise HTTPException(status_code=404, detail="No files found for this user")
 
         return {
-            "uploaded_by": current_user["id"],
+            "uploaded_by": user_id,
             "uploaded_files": all_files_data
         }
 
@@ -1877,12 +1877,8 @@ async def delete_files_by_private_id(
         
 # Selected Files
 @app.post("/photostudio/user/private/select-files", response_model=Dict[str, Any])
-async def user_select_files(
-    request: FileSelectionsRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    if current_user.get("user_type") != "user":
-        raise HTTPException(status_code=403, detail="Only users can access this endpoint")
+async def user_select_files(request: FileSelectionsRequest):
+    user_id = request.user_id
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1940,7 +1936,7 @@ async def user_select_files(
         return {
             "message": "File selections updated successfully.",
             "private_files_id": private_files_id,
-            "uploaded_by": current_user["id"],
+            "uploaded_by": user_id,
             "updated_files": updated_result
         }
 
@@ -1952,6 +1948,7 @@ async def user_select_files(
     finally:
         cur.close()
         conn.close()
+
         
 @app.get("/photostudio/user/private/get_select_files", response_model=Dict[str, Any])
 async def user_get_all_selected_files(
