@@ -123,7 +123,7 @@ class Settings:
     "host" : os.getenv("host"),
     "port" : os.getenv("port")
 }
-    AWS_S3_BUCKET_NAME = "nbs-matrimonybucket1"  # Add this line
+    AWS_S3_BUCKET_NAME = "nbs-matrimonybucket2"  # Add this line
     AWS_S3_REGION = "ap-south-1"  # Add this line
     
 settings = Settings()
@@ -1948,8 +1948,6 @@ async def user_select_files(request: FileSelectionsRequest):
     finally:
         cur.close()
         conn.close()
-
-
         
 @app.get("/photostudio/user/private/get_select_files", response_model=Dict[str, Any])
 async def user_get_all_selected_files(user_id: int = Query(...)):
