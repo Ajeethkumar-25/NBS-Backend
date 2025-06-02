@@ -3,7 +3,7 @@ from botocore.exceptions import NoCredentialsError, ClientError
 import tempfile
 import bcrypt
 import re
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form, Body
 from typing import Optional
 from fastapi.security import OAuth2PasswordBearer
 # from fastapi.security import OAuth2PasswordRequestForm
@@ -2675,7 +2675,7 @@ async def get_matrimony_profiles(
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
-    
+
 ):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -2819,6 +2819,238 @@ async def send_notification(
     Send a push notification to a specific device token.
     """
     return send_push_notification(token, title, body)
+
+# Testing for the myprofiles endpoint
+
+@app.get("/matrimony/my_profiles")
+async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimony)):
+    # Extract identifiers directly from the current_user token
+    email = current_user.get("email")
+    matrimony_id = current_user.get("matrimony_id")
+
+    if not email and not matrimony_id:
+        raise HTTPException(status_code=400, detail="No valid identifier found in token")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        query = """
+        SELECT * FROM matrimony_profiles
+        WHERE (%(email)s IS NULL OR email = %(email)s)
+          AND (%(matrimony_id)s IS NULL OR matrimony_id = %(matrimony_id)s)
+        LIMIT 1;
+        """
+        cur.execute(query, {"email": email, "matrimony_id": matrimony_id})
+        profile = cur.fetchone()
+
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        return {
+            "status": "success",
+            "profile": profile
+        }
+
+    except psycopg2.Error as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
+
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+
+@app.put("/matrimony/my_profiles")
+async def update_my_profile(
+    profile_data: dict = Body(...),  # Accept dynamic fields in JSON body
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    email = current_user.get("email")
+    matrimony_id = current_user.get("matrimony_id")
+
+    if not email and not matrimony_id:
+        raise HTTPException(status_code=400, detail="No valid identifier found in token")
+
+    if not profile_data:
+        raise HTTPException(status_code=400, detail="No data provided to update")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Build dynamic SET clause
+        set_clauses = []
+        values = {}
+        for idx, (key, value) in enumerate(profile_data.items()):
+            set_clauses.append(f"{key} = %(val{idx})s")
+            values[f"val{idx}"] = value
+
+        set_clause = ", ".join(set_clauses)
+        values["email"] = email
+        values["matrimony_id"] = matrimony_id
+
+        query = f"""
+        UPDATE matrimony_profiles
+        SET {set_clause}
+        WHERE (%(email)s IS NULL OR email = %(email)s)
+          AND (%(matrimony_id)s IS NULL OR matrimony_id = %(matrimony_id)s)
+        RETURNING *;
+        """
+
+        cur.execute(query, values)
+        updated_profile = cur.fetchone()
+
+        if not updated_profile:
+            raise HTTPException(status_code=404, detail="Profile not found or nothing updated")
+
+        conn.commit()
+
+        return {
+            "status": "success",
+            "profile": updated_profile
+        }
+
+    except psycopg2.Error as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
+
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+
+# Points mechanism for recharge/ spend
+@app.post("/wallet/recharge")
+async def recharge_wallet(
+    amount: float = Query(...),
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    matrimony_id = current_user["matrimony_id"]
+
+    rate_chart = {
+        200: 1000,
+        500: 3000,
+        1000: 7000
+    }
+
+    if amount not in rate_chart:
+        raise HTTPException(status_code=400, detail="Invalid recharge amount")
+
+    points = rate_chart[amount]
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        # Insert/update wallet
+        cur.execute("""
+            INSERT INTO wallets (matrimony_id, points_balance)
+            VALUES (%s, %s)
+            ON CONFLICT (matrimony_id) DO UPDATE
+            SET points_balance = wallets.points_balance + %s, updated_at = now()
+        """, (matrimony_id, points, points))
+
+        # Log transaction
+        cur.execute("""
+            INSERT INTO point_transactions (matrimony_id, transaction_type, points, amount)
+            VALUES (%s, 'recharge', %s, %s)
+        """, (matrimony_id, points, amount))
+
+        conn.commit()
+
+        return {
+            "status": "success",
+            "points_added": points
+        }
+
+    except Exception as e:
+        conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
+@app.post("/wallet/spend")
+async def spend_points(
+    points: int,
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    matrimony_id = current_user["matrimony_id"]
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        cur.execute("SELECT points_balance FROM wallets WHERE matrimony_id = %s", (matrimony_id,))
+        row = cur.fetchone()
+
+        if not row or row[0] < points:
+            raise HTTPException(status_code=400, detail="Insufficient points")
+
+        cur.execute("""
+            UPDATE wallets
+            SET points_balance = points_balance - %s, updated_at = now()
+            WHERE matrimony_id = %s
+        """, (points, matrimony_id))
+
+        cur.execute("""
+            INSERT INTO point_transactions (matrimony_id, transaction_type, points)
+            VALUES (%s, 'spend', %s)
+        """, (matrimony_id, -points))
+
+        conn.commit()
+
+        return {
+            "status": "success",
+            "points_spent": points
+        }
+
+    except Exception as e:
+        conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
+@app.get("/wallet/balance")
+async def get_wallet_balance(current_user: dict = Depends(get_current_user_matrimony)):
+    matrimony_id = current_user["matrimony_id"]
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("SELECT points_balance FROM wallets WHERE matrimony_id = %s", (matrimony_id,))
+        row = cur.fetchone()
+
+        return {
+            "status": "success",
+            "points_balance": row[0] if row else 0
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 # Run the application
 if __name__ == "__main__":
