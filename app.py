@@ -2823,7 +2823,6 @@ async def send_notification(
     return send_push_notification(token, title, body)
 
 # Testing for the myprofiles endpoint
-
 @app.get("/matrimony/my_profiles")
 async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimony)):
     # Extract identifiers directly from the current_user token
@@ -2939,12 +2938,7 @@ async def recharge_wallet(
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     matrimony_id = current_user["matrimony_id"]
-
-    rate_chart = {
-        200: 1000,
-        500: 3000,
-        1000: 7000
-    }
+    rate_chart = {200: 1000, 500: 3000, 1000: 7000}
 
     if amount not in rate_chart:
         raise HTTPException(status_code=400, detail="Invalid recharge amount")
@@ -2955,7 +2949,6 @@ async def recharge_wallet(
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        # Insert/update wallet
         cur.execute("""
             INSERT INTO wallets (matrimony_id, points_balance)
             VALUES (%s, %s)
@@ -2963,7 +2956,6 @@ async def recharge_wallet(
             SET points_balance = wallets.points_balance + %s, updated_at = now()
         """, (matrimony_id, points, points))
 
-        # Log transaction
         cur.execute("""
             INSERT INTO point_transactions (matrimony_id, transaction_type, points, amount)
             VALUES (%s, 'recharge', %s, %s)
@@ -2971,10 +2963,7 @@ async def recharge_wallet(
 
         conn.commit()
 
-        return {
-            "status": "success",
-            "points_added": points
-        }
+        return {"status": "success", "points_added": points}
 
     except Exception as e:
         conn.rollback()
@@ -2986,63 +2975,112 @@ async def recharge_wallet(
         if 'conn' in locals(): conn.close()
 
 
+class SpendRequest(BaseModel):
+    profile_matrimony_id: str
+    points: int
+
+class SpendRequestPayload(BaseModel):
+    spend_requests: List[SpendRequest]
+
 @app.post("/wallet/spend")
-async def spend_points(
-    points: int,
+async def spend_points_from_user_wallet(
+    payload: SpendRequestPayload,
     current_user: dict = Depends(get_current_user_matrimony)
 ):
-    matrimony_id = current_user["matrimony_id"]
+    results = []
+    errors = []
 
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        cur.execute("SELECT points_balance FROM wallets WHERE matrimony_id = %s", (matrimony_id,))
+        user_matrimony_id = current_user["matrimony_id"]
+        total_points_needed = sum(req.points for req in payload.spend_requests)
+
+        # Fetch current user balance
+        cur.execute("SELECT points_balance FROM wallets WHERE matrimony_id = %s", (user_matrimony_id,))
         row = cur.fetchone()
 
-        if not row or row[0] < points:
-            raise HTTPException(status_code=400, detail="Insufficient points")
+        if not row:
+            raise HTTPException(status_code=404, detail="Current user's wallet not found")
 
+        user_balance = row[0]
+        if user_balance < total_points_needed:
+            raise HTTPException(status_code=400, detail="Insufficient points in current user's wallet")
+
+        # Deduct total points from current user wallet
         cur.execute("""
             UPDATE wallets
             SET points_balance = points_balance - %s, updated_at = now()
             WHERE matrimony_id = %s
-        """, (points, matrimony_id))
+        """, (total_points_needed, user_matrimony_id))
 
-        cur.execute("""
-            INSERT INTO point_transactions (matrimony_id, transaction_type, points)
-            VALUES (%s, 'spend', %s)
-        """, (matrimony_id, -points))
+        # Record individual spends per target profile
+        for request in payload.spend_requests:
+            target_id = request.profile_matrimony_id
+            points = request.points
+
+            try:
+                # Insert transaction (no reference_id)
+                cur.execute("""
+                    INSERT INTO point_transactions (matrimony_id, transaction_type, points)
+                    VALUES (%s, 'spend', %s)
+                """, (user_matrimony_id, -points))
+
+                results.append({
+                    "target_profile": target_id,
+                    "points_spent": points
+                })
+
+            except Exception as e_inner:
+                errors.append({
+                    "target_profile": target_id,
+                    "error": str(e_inner)
+                })
 
         conn.commit()
 
         return {
-            "status": "success",
-            "points_spent": points
+            "status": "partial_success" if errors else "success",
+            "results": results,
+            "errors": errors
         }
 
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        conn.rollback()
+        if 'conn' in locals():
+            conn.rollback()
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
-
+        
 @app.get("/wallet/balance")
-async def get_wallet_balance(current_user: dict = Depends(get_current_user_matrimony)):
-    matrimony_id = current_user["matrimony_id"]
+async def get_wallet_balance(
+    profile_matrimony_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    matrimony_id = profile_matrimony_id or current_user["matrimony_id"]
 
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
+
+        if profile_matrimony_id and profile_matrimony_id != current_user["matrimony_id"]:
+            cur.execute("""
+                SELECT 1 FROM profiles WHERE matrimony_id = %s AND owner_id = %s
+            """, (profile_matrimony_id, current_user["matrimony_id"]))
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="Access denied for this profile")
+
         cur.execute("SELECT points_balance FROM wallets WHERE matrimony_id = %s", (matrimony_id,))
         row = cur.fetchone()
 
         return {
             "status": "success",
+            "matrimony_id": matrimony_id,
             "points_balance": row[0] if row else 0
         }
 
@@ -3053,6 +3091,8 @@ async def get_wallet_balance(current_user: dict = Depends(get_current_user_matri
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
+
+
 
 # Run the application
 if __name__ == "__main__":
