@@ -3016,28 +3016,41 @@ async def spend_points_from_user_wallet(
         """, (total_points_needed, user_matrimony_id))
 
         # Record individual spends per target profile
+
         for request in payload.spend_requests:
             target_id = request.profile_matrimony_id
             points = request.points
 
             try:
+                # Fetch full_name of the target profile
+                cur.execute("""
+                    SELECT full_name FROM matrimony_profiles WHERE matrimony_id = %s
+                """, (target_id,))
+                profile_row = cur.fetchone()
+
+                if not profile_row:
+                    raise Exception(f"Profile not found for matrimony_id: {target_id}")
+
+                full_name = profile_row[0]
+
                 # Insert transaction (no reference_id)
                 cur.execute("""
-                    INSERT INTO point_transactions (matrimony_id, transaction_type, points)
-                    VALUES (%s, 'spend', %s)
-                """, (user_matrimony_id, -points))
+                    INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
+                    VALUES (%s, %s, %s)
+                """, (user_matrimony_id, target_id, points))
 
                 results.append({
-                    "target_profile": target_id,
+                    "target_profile_id": target_id,
+                    "target_profile_name": full_name,
                     "points_spent": points
                 })
 
             except Exception as e_inner:
                 errors.append({
-                    "target_profile": target_id,
+                    "target_profile_id": target_id,
                     "error": str(e_inner)
                 })
-
+        
         conn.commit()
 
         return {
@@ -3056,7 +3069,97 @@ async def spend_points_from_user_wallet(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-        
+
+@app.get("/wallet/spend/latest")
+async def get_latest_spends(current_user: dict = Depends(get_current_user_matrimony)):
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        user_matrimony_id = current_user["matrimony_id"]
+
+        cur.execute("""
+            SELECT 
+                sa.target_matrimony_id,
+                mp.full_name,
+                sa.points,
+                sa.created_at
+            FROM spend_actions sa
+            LEFT JOIN matrimony_profiles mp 
+            ON sa.target_matrimony_id = mp.matrimony_id
+            WHERE sa.matrimony_id = %s
+            ORDER BY sa.created_at DESC
+            LIMIT 10
+        """, (user_matrimony_id,))
+
+        rows = cur.fetchall()
+
+        results = [
+            {
+                "target_profile_id": row[0],
+                "target_profile_name": row[1],
+                "points_spent": row[2],
+                "timestamp": row[3]
+            }
+            for row in rows
+        ]
+
+        return {"status": "success", "results": results}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
+@app.get("/wallet/spend-history")
+async def get_spend_history(
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        user_matrimony_id = current_user["matrimony_id"]
+
+        # Join transactions with profile info (for profiles on whom points were spent)
+        cur.execute("""
+            SELECT 
+                mp.matrimony_id AS target_profile_id,
+                mp.full_name AS target_profile_name,
+                -pt.points AS points_spent,  -- Store as positive
+                pt.created_at
+            FROM point_transactions pt
+            JOIN matrimony_profiles mp ON mp.matrimony_id != pt.matrimony_id  -- Other profiles
+            WHERE pt.matrimony_id = %s AND pt.transaction_type = 'spend'
+            ORDER BY pt.created_at DESC
+        """, (user_matrimony_id,))
+
+        rows = cur.fetchall()
+
+        history = [
+            {
+                "target_profile_id": row[0],
+                "target_profile_name": row[1],
+                "points_spent": row[2],
+                "timestamp": row[3]
+            }
+            for row in rows
+        ]
+
+        return {"matrimony_id": user_matrimony_id, "spend_history": history}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Failed to fetch spend history")
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
 @app.get("/wallet/balance")
 async def get_wallet_balance(
     profile_matrimony_id: Optional[str] = None,
