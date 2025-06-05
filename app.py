@@ -3261,15 +3261,19 @@ async def get_favorite_profiles(
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
+        # Join favorite_profiles with matrimony_profiles to get full profile details
         cur.execute("""
-            SELECT favorite_profile_id FROM favorite_profiles
-            WHERE matrimony_id = %s
+            SELECT mp.*
+            FROM favorite_profiles fp
+            JOIN matrimony_profiles mp
+              ON fp.favorite_profile_id = mp.matrimony_id
+            WHERE fp.matrimony_id = %s
         """, (matrimony_id,))
         favorites = cur.fetchall()
 
         return {
             "status": "success",
-            "favorites": [row["favorite_profile_id"] for row in favorites]
+            "favorites": favorites
         }
 
     finally:
