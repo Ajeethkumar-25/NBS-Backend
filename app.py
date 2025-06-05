@@ -2825,7 +2825,6 @@ async def send_notification(
 # Testing for the myprofiles endpoint
 @app.get("/matrimony/my_profiles")
 async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimony)):
-    # Extract identifiers directly from the current_user token
     email = current_user.get("email")
     matrimony_id = current_user.get("matrimony_id")
 
@@ -2837,9 +2836,20 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         query = """
-        SELECT * FROM matrimony_profiles
-        WHERE (%(email)s IS NULL OR email = %(email)s)
-          AND (%(matrimony_id)s IS NULL OR matrimony_id = %(matrimony_id)s)
+        SELECT 
+            mp.*, 
+            COALESCE(SUM(sa.points), 0) AS points_spent
+        FROM 
+            matrimony_profiles mp
+        LEFT JOIN 
+            spend_actions sa 
+        ON 
+            mp.matrimony_id = sa.matrimony_id
+        WHERE 
+            (%(email)s IS NULL OR mp.email = %(email)s)
+            AND (%(matrimony_id)s IS NULL OR mp.matrimony_id = %(matrimony_id)s)
+        GROUP BY 
+            mp.id
         LIMIT 1;
         """
         cur.execute(query, {"email": email, "matrimony_id": matrimony_id})
@@ -2866,6 +2876,7 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
             cur.close()
         if 'conn' in locals():
             conn.close()
+
 
 @app.put("/matrimony/my_profiles")
 async def update_my_profile(
@@ -3195,6 +3206,75 @@ async def get_wallet_balance(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+
+class FavoriteProfilesRequest(BaseModel):
+    favorite_profile_ids: List[str]
+
+@app.post("/matrimony/favorite-profiles", response_model=Dict[str, Any])
+async def mark_favorite_profiles(
+    request: FavoriteProfilesRequest,
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    matrimony_id = current_user["matrimony_id"]
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        inserted = []
+        for fav_id in request.favorite_profile_ids:
+            try:
+                cur.execute("""
+                    INSERT INTO favorite_profiles (matrimony_id, favorite_profile_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (matrimony_id, favorite_profile_id) DO NOTHING
+                    RETURNING id, favorite_profile_id
+                """, (matrimony_id, fav_id))
+                result = cur.fetchone()
+                if result:
+                    inserted.append(result[1])
+            except Exception as e:
+                print(f"Failed to insert favorite for {fav_id}: {e}")
+
+        conn.commit()
+
+        return {
+            "status": "success",
+            "matrimony_id": matrimony_id,
+            "favorited_profiles": inserted
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save favorites: {str(e)}")
+
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/matrimony/get-favorite-profiles", response_model=Dict[str, Any])
+async def get_favorite_profiles(
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    matrimony_id = current_user["matrimony_id"]
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        cur.execute("""
+            SELECT favorite_profile_id FROM favorite_profiles
+            WHERE matrimony_id = %s
+        """, (matrimony_id,))
+        favorites = cur.fetchall()
+
+        return {
+            "status": "success",
+            "favorites": [row["favorite_profile_id"] for row in favorites]
+        }
+
+    finally:
+        cur.close()
+        conn.close()
 
 
 # Run the application
