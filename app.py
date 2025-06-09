@@ -2671,19 +2671,16 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
-
-
+        
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
-    current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
-
-
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
 ):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
     try:
-        # Get complete profile of current user
+        # Fetch current user's full profile
         cur.execute(
             """
             SELECT matrimony_id, gender, preferred_rashi, preferred_nakshatra, 
@@ -2694,21 +2691,20 @@ async def get_matrimony_preferences(
             [current_user.get("matrimony_id")]
         )
         user_profile = cur.fetchone()
-        
+
         if not user_profile:
             logger.error(f"Profile not found for user: {current_user.get('matrimony_id')}")
             raise HTTPException(status_code=404, detail="User profile not found")
 
         logger.info(f"Current user exact values - ID: {user_profile['matrimony_id']}, "
-                   f"Gender: '{user_profile['gender']}', "
-                   f"Preferred Rashi: '{user_profile['preferred_rashi']}', "
-                   f"Preferred Nakshatra: '{user_profile['preferred_nakshatra']}', "
-                   f"Preferred Religion: '{user_profile['preferred_religion']}'")
+                    f"Gender: '{user_profile['gender']}', "
+                    f"Preferred Rashi: '{user_profile['preferred_rashi']}', "
+                    f"Preferred Nakshatra: '{user_profile['preferred_nakshatra']}', "
+                    f"Preferred Religion: '{user_profile['preferred_religion']}'")
 
         user_gender = user_profile['gender'].strip()
         opposite_gender = "Male" if user_gender.lower() == "female" else "Female"
 
-        # Build query parts based on preferences
         query = """
             SELECT * FROM matrimony_profiles
             WHERE gender ILIKE %s
@@ -2716,7 +2712,6 @@ async def get_matrimony_preferences(
         """
         params = [opposite_gender, user_profile['matrimony_id']]
 
-        # Add rashi filter
         if user_profile['preferred_rashi']:
             preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
             if preferred_rashi_list:
@@ -2727,7 +2722,6 @@ async def get_matrimony_preferences(
                 params.append(preferred_rashi_list)
                 logger.info(f"Filtering by preferred rashi: {preferred_rashi_list}")
 
-        # Add nakshatra filter
         if user_profile['preferred_nakshatra']:
             preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
             if preferred_nakshatra_list:
@@ -2737,8 +2731,7 @@ async def get_matrimony_preferences(
                 """
                 params.append(preferred_nakshatra_list)
                 logger.info(f"Filtering by preferred nakshatra: {preferred_nakshatra_list}")
-
-        # Add religion filter
+        
         if user_profile['preferred_religion']:
             preferred_religion_list = [r.strip() for r in user_profile['preferred_religion'].split(",") if r.strip()]
             if preferred_religion_list:
@@ -2751,7 +2744,7 @@ async def get_matrimony_preferences(
 
         logger.info(f"Executing query: {query}")
         logger.info(f"Query params: {params}")
-        
+
         cur.execute(query, params)
         profiles = cur.fetchall()
 
@@ -2762,16 +2755,27 @@ async def get_matrimony_preferences(
         compatible_profiles = []
         for profile in profiles:
             profile_dict = dict(zip([desc[0] for desc in cur.description], profile))
-            
+
+            # Format date_of_birth
+            if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
+                profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
+
+            # Format birth_time
             if isinstance(profile_dict.get("birth_time"), time):
-                profile_dict["birth_time"] = profile_dict["birth_time"].strftime("%H:%M:%S")
-            
+                profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
+
+            # Calculate age
+            if profile_dict.get("date_of_birth"):
+                dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
+                today = datetime.today()
+                profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
             logger.info(f"Found matching profile - ID: {profile_dict['matrimony_id']}, "
-                       f"Gender: '{profile_dict['gender']}', "
-                       f"Rashi: '{profile_dict.get('rashi')}', "
-                       f"Nakshatra: '{profile_dict.get('nakshatra')}', "
-                       f"Religion: '{profile_dict.get('religion')}'")
-            
+                        f"Gender: '{profile_dict['gender']}', "
+                        f"Rashi: '{profile_dict.get('rashi')}', "
+                        f"Nakshatra: '{profile_dict.get('nakshatra')}', "
+                        f"Religion: '{profile_dict.get('religion')}'")
+
             compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
 
         return compatible_profiles
@@ -2783,6 +2787,7 @@ async def get_matrimony_preferences(
     finally:
         cur.close()
         conn.close()
+
 
 @app.get("/rashi_compatibility/{rashi1}/{rashi2}")
 def get_rashi_compatibility(rashi1: str, rashi2: str):
