@@ -3216,25 +3216,56 @@ async def mark_favorite_profiles(
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     matrimony_id = current_user["matrimony_id"]
+    user_gender = current_user.get("gender")
+
+    if not user_gender:
+        raise HTTPException(status_code=400, detail="User gender not found")
+
+    opposite_gender = "Female" if user_gender.lower() == "male" else "Male"
 
     conn = get_db_connection()
     cur = conn.cursor()
 
     try:
+        # Step 1: Validate all favorite_profile_ids
+        for fav_id in request.favorite_profile_ids:
+            cur.execute("""
+                SELECT gender FROM matrimony_profiles
+                WHERE matrimony_id = %s
+            """, (fav_id,))
+            result = cur.fetchone()
+
+            if not result:
+                raise HTTPException(status_code=404, detail=f"Profile {fav_id} not found")
+
+            target_gender = result[0]
+            if target_gender.lower() != opposite_gender.lower():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot favorite profile {fav_id} with same gender: {target_gender}"
+                )
+
+            # Check if already favorited
+            cur.execute("""
+                SELECT 1 FROM favorite_profiles
+                WHERE matrimony_id = %s AND favorite_profile_id = %s
+            """, (matrimony_id, fav_id))
+            if cur.fetchone():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Profile {fav_id} already favorited"
+                )
+
+        # Step 2: Insert all valid entries
         inserted = []
         for fav_id in request.favorite_profile_ids:
-            try:
-                cur.execute("""
-                    INSERT INTO favorite_profiles (matrimony_id, favorite_profile_id)
-                    VALUES (%s, %s)
-                    ON CONFLICT (matrimony_id, favorite_profile_id) DO NOTHING
-                    RETURNING id, favorite_profile_id
-                """, (matrimony_id, fav_id))
-                result = cur.fetchone()
-                if result:
-                    inserted.append(result[1])
-            except Exception as e:
-                print(f"Failed to insert favorite for {fav_id}: {e}")
+            cur.execute("""
+                INSERT INTO favorite_profiles (matrimony_id, favorite_profile_id)
+                VALUES (%s, %s)
+                RETURNING favorite_profile_id
+            """, (matrimony_id, fav_id))
+            result = cur.fetchone()
+            inserted.append(result[0])
 
         conn.commit()
 
@@ -3244,10 +3275,12 @@ async def mark_favorite_profiles(
             "favorited_profiles": inserted
         }
 
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save favorites: {str(e)}")
-
     finally:
         cur.close()
         conn.close()
