@@ -3261,14 +3261,24 @@ async def get_favorite_profiles(
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # Join favorite_profiles with matrimony_profiles to get full profile details
-        cur.execute("""
+        base_query = """
             SELECT mp.*
             FROM favorite_profiles fp
-            JOIN matrimony_profiles mp
-              ON fp.favorite_profile_id = mp.matrimony_id
+            JOIN matrimony_profiles mp ON fp.favorite_profile_id = mp.matrimony_id
             WHERE fp.matrimony_id = %s
-        """, (matrimony_id,))
+        """
+        params = [matrimony_id]
+
+        # Apply gender filter if user is not admin
+        if current_user.get("user_type") != "admin":
+            user_gender = current_user.get("gender")
+            if not user_gender:
+                raise HTTPException(status_code=400, detail="User gender not found")
+            opposite_gender = "Female" if user_gender.lower() == "male" else "Male"
+            base_query += " AND mp.gender ILIKE %s"
+            params.append(opposite_gender)
+
+        cur.execute(base_query, params)
         favorites = cur.fetchall()
 
         return {
@@ -3276,9 +3286,13 @@ async def get_favorite_profiles(
             "favorites": favorites
         }
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving favorites: {str(e)}")
+
     finally:
         cur.close()
         conn.close()
+
 
 
 # Run the application
