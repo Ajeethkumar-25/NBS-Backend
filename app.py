@@ -2672,19 +2672,20 @@ async def get_matrimony_profiles(
         cur.close()
         conn.close()
         
+
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
-    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
+    case_sensitive: Optional[bool] = Query(default=False)
 ):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
     try:
-        # Fetch current user's full profile
+        # Fetch current user's profile
         cur.execute(
             """
-            SELECT matrimony_id, gender, preferred_rashi, preferred_nakshatra, 
-                   preferred_religion, rashi, nakshatra, religion
+            SELECT matrimony_id, gender, preferred_rashi
             FROM matrimony_profiles 
             WHERE matrimony_id = %s
             """, 
@@ -2693,14 +2694,7 @@ async def get_matrimony_preferences(
         user_profile = cur.fetchone()
 
         if not user_profile:
-            logger.error(f"Profile not found for user: {current_user.get('matrimony_id')}")
             raise HTTPException(status_code=404, detail="User profile not found")
-
-        logger.info(f"Current user exact values - ID: {user_profile['matrimony_id']}, "
-                    f"Gender: '{user_profile['gender']}', "
-                    f"Preferred Rashi: '{user_profile['preferred_rashi']}', "
-                    f"Preferred Nakshatra: '{user_profile['preferred_nakshatra']}', "
-                    f"Preferred Religion: '{user_profile['preferred_religion']}'")
 
         user_gender = user_profile['gender'].strip()
         opposite_gender = "Male" if user_gender.lower() == "female" else "Female"
@@ -2708,85 +2702,54 @@ async def get_matrimony_preferences(
         query = """
             SELECT * FROM matrimony_profiles
             WHERE gender ILIKE %s
-            AND matrimony_id != %s
+              AND matrimony_id != %s
         """
         params = [opposite_gender, user_profile['matrimony_id']]
 
+        # Apply Rashi filter
         if user_profile['preferred_rashi']:
-            preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
+            preferred_rashi_list = [
+                r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()
+            ]
+
             if preferred_rashi_list:
-                query += """
-                    AND rashi IS NOT NULL
-                    AND LOWER(rashi) = ANY(SELECT LOWER(UNNEST(%s)))
-                """
-                params.append(preferred_rashi_list)
-                logger.info(f"Filtering by preferred rashi: {preferred_rashi_list}")
-
-        if user_profile['preferred_nakshatra']:
-            preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
-            if preferred_nakshatra_list:
-                query += """
-                    AND nakshatra IS NOT NULL
-                    AND LOWER(nakshatra) = ANY(SELECT LOWER(UNNEST(%s)))
-                """
-                params.append(preferred_nakshatra_list)
-                logger.info(f"Filtering by preferred nakshatra: {preferred_nakshatra_list}")
-        
-        if user_profile['preferred_religion']:
-            preferred_religion_list = [r.strip() for r in user_profile['preferred_religion'].split(",") if r.strip()]
-            if preferred_religion_list:
-                query += """
-                    AND religion IS NOT NULL
-                    AND LOWER(religion) = ANY(SELECT LOWER(UNNEST(%s)))
-                """
-                params.append(preferred_religion_list)
-                logger.info(f"Filtering by preferred religion: {preferred_religion_list}")
-
-        logger.info(f"Executing query: {query}")
-        logger.info(f"Query params: {params}")
+                query += " AND rashi IS NOT NULL"
+                if case_sensitive:
+                    query += " AND rashi = ANY(%s)"
+                    params.append(preferred_rashi_list)
+                else:
+                    query += " AND LOWER(rashi) = ANY(%s)"
+                    params.append([r.lower() for r in preferred_rashi_list])
 
         cur.execute(query, params)
         profiles = cur.fetchall()
-
-        if not profiles:
-            logger.info("No matching profiles found")
-            return []
 
         compatible_profiles = []
         for profile in profiles:
             profile_dict = dict(zip([desc[0] for desc in cur.description], profile))
 
-            # Format date_of_birth
             if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                 profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
 
-            # Format birth_time
             if isinstance(profile_dict.get("birth_time"), time):
                 profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
-            # Calculate age
             if profile_dict.get("date_of_birth"):
                 dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
                 today = datetime.today()
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-
-            logger.info(f"Found matching profile - ID: {profile_dict['matrimony_id']}, "
-                        f"Gender: '{profile_dict['gender']}', "
-                        f"Rashi: '{profile_dict.get('rashi')}', "
-                        f"Nakshatra: '{profile_dict.get('nakshatra')}', "
-                        f"Religion: '{profile_dict.get('religion')}'")
 
             compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
 
         return compatible_profiles
 
     except Exception as e:
-        logger.error(f"Error in get_matrimony_preferences: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
 
     finally:
         cur.close()
         conn.close()
+
 
 
 @app.get("/rashi_compatibility/{rashi1}/{rashi2}")
