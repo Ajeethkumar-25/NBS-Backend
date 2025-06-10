@@ -2671,7 +2671,7 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
-        
+
 
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
@@ -2681,16 +2681,37 @@ async def get_matrimony_preferences(
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
+    def process_s3_url(url, folder_name):
+        if url and isinstance(url, str):
+            if url.startswith("http"):
+                return url
+            return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+        return None
+
+    def process_s3_urls(value, folder_name):
+        if not value:
+            return None
+        if isinstance(value, str):
+            items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+        if not items:
+            return None
+        return [
+            item if item.startswith("http") else
+            f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
+            for item in items
+        ]
+
     try:
         # Fetch current user's profile
-        cur.execute(
-            """
+        cur.execute("""
             SELECT matrimony_id, gender, preferred_rashi
             FROM matrimony_profiles 
             WHERE matrimony_id = %s
-            """, 
-            [current_user.get("matrimony_id")]
-        )
+        """, [current_user.get("matrimony_id")])
         user_profile = cur.fetchone()
 
         if not user_profile:
@@ -2706,12 +2727,8 @@ async def get_matrimony_preferences(
         """
         params = [opposite_gender, user_profile['matrimony_id']]
 
-        # Apply Rashi filter
         if user_profile['preferred_rashi']:
-            preferred_rashi_list = [
-                r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()
-            ]
-
+            preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
             if preferred_rashi_list:
                 query += " AND rashi IS NOT NULL"
                 if case_sensitive:
@@ -2726,7 +2743,11 @@ async def get_matrimony_preferences(
 
         compatible_profiles = []
         for profile in profiles:
-            profile_dict = dict(zip([desc[0] for desc in cur.description], profile))
+            profile_dict = dict(profile)
+
+            profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
+            profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
+            profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
             if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                 profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
@@ -2749,6 +2770,7 @@ async def get_matrimony_preferences(
     finally:
         cur.close()
         conn.close()
+
 
 
 
