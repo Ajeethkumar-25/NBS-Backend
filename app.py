@@ -3214,6 +3214,7 @@ async def get_wallet_balance(
 
 class FavoriteProfilesRequest(BaseModel):
     favorite_profile_ids: List[str]
+    unfavorite_profile_ids: Optional[List[str]] = []
 
 @app.post("/matrimony/favorite-profiles", response_model=Dict[str, Any])
 async def mark_favorite_profiles(
@@ -3232,12 +3233,12 @@ async def mark_favorite_profiles(
     cur = conn.cursor()
 
     try:
-        # Step 1: Validate all favorite_profile_ids
+        inserted = []
+        removed = []
+
+        # --- FAVORITE LOGIC ---
         for fav_id in request.favorite_profile_ids:
-            cur.execute("""
-                SELECT gender FROM matrimony_profiles
-                WHERE matrimony_id = %s
-            """, (fav_id,))
+            cur.execute("SELECT gender FROM matrimony_profiles WHERE matrimony_id = %s", (fav_id,))
             result = cur.fetchone()
 
             if not result:
@@ -3250,34 +3251,35 @@ async def mark_favorite_profiles(
                     detail=f"Cannot favorite profile {fav_id} with same gender: {target_gender}"
                 )
 
-            # Check if already favorited
-            cur.execute("""
-                SELECT 1 FROM favorite_profiles
-                WHERE matrimony_id = %s AND favorite_profile_id = %s
-            """, (matrimony_id, fav_id))
+            cur.execute("SELECT 1 FROM favorite_profiles WHERE matrimony_id = %s AND favorite_profile_id = %s", (matrimony_id, fav_id))
             if cur.fetchone():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Profile {fav_id} already favorited"
-                )
+                continue  # already favorited, skip
 
-        # Step 2: Insert all valid entries
-        inserted = []
-        for fav_id in request.favorite_profile_ids:
             cur.execute("""
                 INSERT INTO favorite_profiles (matrimony_id, favorite_profile_id)
-                VALUES (%s, %s)
-                RETURNING favorite_profile_id
+                VALUES (%s, %s) RETURNING favorite_profile_id
             """, (matrimony_id, fav_id))
             result = cur.fetchone()
             inserted.append(result[0])
+
+        # --- UNFAVORITE LOGIC ---
+        for unfav_id in request.unfavorite_profile_ids:
+            cur.execute("""
+                DELETE FROM favorite_profiles
+                WHERE matrimony_id = %s AND favorite_profile_id = %s
+                RETURNING favorite_profile_id
+            """, (matrimony_id, unfav_id))
+            result = cur.fetchone()
+            if result:
+                removed.append(result[0])
 
         conn.commit()
 
         return {
             "status": "success",
             "matrimony_id": matrimony_id,
-            "favorited_profiles": inserted
+            "favorited_profiles": inserted,
+            "unfavorited_profiles": removed
         }
 
     except HTTPException:
@@ -3285,10 +3287,11 @@ async def mark_favorite_profiles(
         raise
     except Exception as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to save favorites: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update favorites: {str(e)}")
     finally:
         cur.close()
         conn.close()
+
 
 @app.get("/matrimony/get-favorite-profiles", response_model=Dict[str, Any])
 async def get_favorite_profiles(
