@@ -2322,7 +2322,7 @@ async def register_matrimony(
             cur.close()
         if 'conn' in locals():
             conn.close()
-        
+
 @app.post("/matrimony/login", response_model=MatrimonyToken)
 async def login_matrimony(request: MatrimonyLoginRequest):
     try:
@@ -2473,7 +2473,7 @@ def increment_matrimony_id(request: IncrementMatrimonyIdRequest):
             cur.close()
         if conn:
             conn.close()
-            
+
 @app.post("/matrimony/refresh-token", response_model=TokenResponse)
 async def matrimony_refresh_token(token: RefreshTokenRequest):
     logger.debug(f"Received refresh token: {token.refresh_token}")
@@ -2672,7 +2672,6 @@ async def get_matrimony_profiles(
         cur.close()
         conn.close()
 
-
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
@@ -2771,9 +2770,6 @@ async def get_matrimony_preferences(
         cur.close()
         conn.close()
 
-
-
-
 @app.get("/rashi_compatibility/{rashi1}/{rashi2}")
 def get_rashi_compatibility(rashi1: str, rashi2: str):
     rashi1, rashi2 = rashi1.lower(), rashi2.lower()
@@ -2799,7 +2795,6 @@ def check_full_compatibility(request: CompatibilityRequest):
         "bride_nakshatra": request.bride_nakshatra,
         "nakshatra_compatibility": nakshatra_match or "Unknown"
     }
-
 
 @app.post("/send-notification", response_model=Dict[str, Any])
 async def send_notification(
@@ -2866,7 +2861,6 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
             cur.close()
         if 'conn' in locals():
             conn.close()
-
 
 @app.put("/matrimony/my_profiles")
 async def update_my_profile(
@@ -2974,7 +2968,6 @@ async def recharge_wallet(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
 
 class SpendRequest(BaseModel):
     profile_matrimony_id: str
@@ -3115,7 +3108,6 @@ async def get_latest_spends(current_user: dict = Depends(get_current_user_matrim
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-
 @app.get("/wallet/spend-history")
 async def get_spend_history(
     current_user: dict = Depends(get_current_user_matrimony)
@@ -3160,7 +3152,6 @@ async def get_spend_history(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-
 @app.get("/wallet/balance")
 async def get_wallet_balance(
     profile_matrimony_id: Optional[str] = None,
@@ -3195,8 +3186,7 @@ async def get_wallet_balance(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
-
+        
 class FavoriteProfilesRequest(BaseModel):
     favorite_profile_ids: List[str]
     unfavorite_profile_ids: Optional[List[str]] = []
@@ -3277,7 +3267,6 @@ async def mark_favorite_profiles(
         cur.close()
         conn.close()
 
-
 @app.get("/matrimony/get-favorite-profiles", response_model=Dict[str, Any])
 async def get_favorite_profiles(
     current_user: dict = Depends(get_current_user_matrimony)
@@ -3317,8 +3306,85 @@ async def get_favorite_profiles(
 
     finally:
         cur.close()
+
+
+class EmailVerificationRequest(BaseModel):
+    email: EmailStr
+
+@app.post("/matrimony/verify-email")
+async def verify_email(request: EmailVerificationRequest):
+    try:
+        # Connect to DB
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Query to check if email exists
+        cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s", (request.email,))
+        user = cur.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        return {
+            "message": "Email verified successfully",
+            "matrimony_id": user["matrimony_id"]
+        }
+
+    except psycopg2.Error as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+
         conn.close()
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    new_password: str = Field(..., min_length=6)
+    confirm_password: str = Field(..., min_length=6)
+
+@app.post("/matrimony/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest):
+    try:
+        if request.new_password != request.confirm_password:
+            raise HTTPException(status_code=400, detail="Passwords do not match")
+
+        # Connect to DB
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        # Check if email exists
+        cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s", (request.email,))
+        user = cur.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        # Hash and update the password
+        hashed_password = pwd_context.hash(request.new_password)
+        cur.execute(
+            "UPDATE matrimony_profiles SET password = %s, updated_at = now() WHERE email = %s",
+            (hashed_password, request.email)
+        )
+        conn.commit()
+
+        return {"message": "Password has been reset successfully"}
+
+    except psycopg2.Error as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 
 # Run the application
