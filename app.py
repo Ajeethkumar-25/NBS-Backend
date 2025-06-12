@@ -397,6 +397,25 @@ class TokenResponse(BaseModel):
 
 class IncrementMatrimonyIdRequest(BaseModel):
     last_matrimony_id: str 
+    
+class SpendRequest(BaseModel):
+    profile_matrimony_id: str
+    points: int
+
+class SpendRequestPayload(BaseModel):
+    spend_requests: List[SpendRequest]
+
+class FavoriteProfilesRequest(BaseModel):
+    favorite_profile_ids: List[str]
+    unfavorite_profile_ids: Optional[List[str]] = []
+
+class EmailVerificationRequest(BaseModel):
+    email: EmailStr
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    new_password: str = Field(..., min_length=6)
+    confirm_password: str = Field(..., min_length=6)
 
 # Full Rashi compatibility data
 RASHI_COMPATIBILITY = {
@@ -1194,7 +1213,6 @@ async def admin_upload_files(
         cur.close()
         conn.close()
 
-
 @app.get("/photostudio/user/fileupload", response_model=List[Dict[str, Any]])
 async def get_uploaded_files(
     category: str = Query(..., description="Category of the uploaded files"),
@@ -1466,8 +1484,6 @@ async def login (user: UserLogin):
         conn.close()    
 
 # Login Refresh_token
-
-
 @app.post("/photostudio/private/admin/refresh", response_model=Dict[str, Any])
 async def refresh_token(token: RefreshToken):
     conn = get_db_connection()
@@ -2061,7 +2077,6 @@ async def create_admin_product_frame(
         cur.close()
         conn.close()
 
-
 # Matrimony Endpoints
 @app.post("/matrimony/send-otp", response_model=Dict[str, Any])
 async def send_otp(request: OTPRequest):
@@ -2148,8 +2163,7 @@ async def verify_otp(request: OTPVerify):
     finally:
         cur.close()
         conn.close()
-        
-        
+             
 def convert_empty_to_none(value):
     """ Convert empty strings to None (NULL in PostgreSQL) """
     return None if value == "" else value
@@ -2969,12 +2983,6 @@ async def recharge_wallet(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-class SpendRequest(BaseModel):
-    profile_matrimony_id: str
-    points: int
-
-class SpendRequestPayload(BaseModel):
-    spend_requests: List[SpendRequest]
 
 @app.post("/wallet/spend")
 async def spend_points_from_user_wallet(
@@ -3186,10 +3194,6 @@ async def get_wallet_balance(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-        
-class FavoriteProfilesRequest(BaseModel):
-    favorite_profile_ids: List[str]
-    unfavorite_profile_ids: Optional[List[str]] = []
 
 @app.post("/matrimony/favorite-profiles", response_model=Dict[str, Any])
 async def mark_favorite_profiles(
@@ -3275,6 +3279,31 @@ async def get_favorite_profiles(
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    def process_s3_url(url, folder_name):
+        if url and isinstance(url, str):
+            if url.startswith("http"):
+                return url
+            else:
+                return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+        return None
+
+    def process_s3_urls(value, folder_name):
+        if not value:
+            return None
+        if isinstance(value, str):
+            items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+        if not items:
+            return None
+        return [
+            item if item.startswith("http") else
+            f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
+            for item in items
+        ]
+
     try:
         base_query = """
             SELECT mp.*
@@ -3296,9 +3325,30 @@ async def get_favorite_profiles(
         cur.execute(base_query, params)
         favorites = cur.fetchall()
 
+        result_profiles = []
+
+        for profile in favorites:
+            profile_dict = dict(profile)
+
+            for key, value in profile_dict.items():
+                if isinstance(value, str) and not value.strip():
+                    profile_dict[key] = None
+
+            # Add processed photo URL
+            profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
+
+            # Remove original photo_path field
+            profile_dict.pop("photo_path", None)
+
+            # Process other S3-based fields
+            profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
+            profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
+
+            result_profiles.append(profile_dict)
+
         return {
             "status": "success",
-            "favorites": favorites
+            "favorites": result_profiles
         }
 
     except Exception as e:
@@ -3306,10 +3356,6 @@ async def get_favorite_profiles(
 
     finally:
         cur.close()
-
-
-class EmailVerificationRequest(BaseModel):
-    email: EmailStr
 
 @app.post("/matrimony/verify-email")
 async def verify_email(request: EmailVerificationRequest):
@@ -3343,11 +3389,6 @@ async def verify_email(request: EmailVerificationRequest):
             conn.close()
 
         conn.close()
-
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
-    new_password: str = Field(..., min_length=6)
-    confirm_password: str = Field(..., min_length=6)
 
 @app.post("/matrimony/forgot-password")
 async def forgot_password(request: ForgotPasswordRequest):
