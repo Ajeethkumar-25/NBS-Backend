@@ -2554,13 +2554,19 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
         if conn:
             conn.close()
 
-@app.get("/matrimony/profiles", response_model=List[MatrimonyProfileResponse])
+from datetime import datetime, timedelta, date, time
+from typing import List, Dict, Any, Optional
+from fastapi import Query, Depends, HTTPException
+from pydantic import ValidationError
+
+@app.get("/matrimony/profiles", response_model=Dict[str, List[MatrimonyProfileResponse]])
 async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     language: Optional[str] = Query("en", description="Language for response (e.g., 'en', 'ta')")
 ):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
+
     try:
         logger.info(f"Current user: {current_user}")
         logger.info(f"Requested language: {language}")
@@ -2582,7 +2588,7 @@ async def get_matrimony_profiles(
         logger.info(f"Fetched profiles count: {len(profiles)}")
 
         if not profiles:
-            return []
+            return {"New Profiles": [], "Default Profiles": []}
 
         translator = None
         if language and language.lower() != "en":
@@ -2624,7 +2630,9 @@ async def get_matrimony_profiles(
             key = term.strip().lower().replace(" ", "_")
             return ASTROLOGY_TERMS.get(key, {}).get(lang, term)
 
-        result_profiles = []
+        new_profiles = []
+        default_profiles = []
+        cutoff_date = datetime.now() - timedelta(days=1)
 
         for profile in profiles:
             profile_dict = dict(profile)
@@ -2637,11 +2645,9 @@ async def get_matrimony_profiles(
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
-            # Birth_time
             if isinstance(profile_dict.get("birth_time"), time):
                 profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
-            # Date_of_birth
             if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                 profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
 
@@ -2651,6 +2657,7 @@ async def get_matrimony_profiles(
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
             profile_dict["is_translated"] = False
+
             if translator and language.lower() != "en":
                 translatable_fields = [
                     "full_name", "occupation", "gender", "education", "mother_tongue", "dhosham", 
@@ -2671,13 +2678,21 @@ async def get_matrimony_profiles(
                         profile_dict["is_translated"] = True
 
             try:
-                result_profiles.append(MatrimonyProfileResponse(**profile_dict))
+                profile_obj = MatrimonyProfileResponse(**profile_dict)
+                updated_at = profile.get("updated_at")
+                if updated_at and isinstance(updated_at, datetime) and updated_at >= cutoff_date:
+                    new_profiles.append(profile_obj)
+                else:
+                    default_profiles.append(profile_obj)
             except ValidationError as e:
                 logger.error(f"Validation error for {profile_dict.get('matrimony_id')}: {e}")
                 continue
 
-        logger.info(f"Returning {len(result_profiles)} profiles")
-        return result_profiles
+        logger.info(f"Returning {len(new_profiles)} new and {len(default_profiles)} default profiles")
+        return {
+            "New Profiles": new_profiles,
+            "Default Profiles": default_profiles
+        }
 
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
@@ -2783,6 +2798,113 @@ async def get_matrimony_preferences(
     finally:
         cur.close()
         conn.close()
+
+@app.get("/matrimony/location-preference", response_model=List[MatrimonyProfileResponse])
+async def get_matrimony_preferences(
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
+    case_sensitive: Optional[bool] = Query(default=False)
+):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+
+    def process_s3_url(url, folder_name):
+        if url and isinstance(url, str):
+            if url.startswith("http"):
+                return url
+            return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+        return None
+
+    def process_s3_urls(value, folder_name):
+        if not value:
+            return None
+        if isinstance(value, str):
+            items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+        if not items:
+            return None
+        return [
+            item if item.startswith("http") else
+            f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
+            for item in items
+        ]
+
+    try:
+        # Fetch current user's profile
+        cur.execute("""
+            SELECT matrimony_id, gender, preferred_location
+            FROM matrimony_profiles 
+            WHERE matrimony_id = %s
+        """, [current_user.get("matrimony_id")])
+        user_profile = cur.fetchone()
+
+        if not user_profile:
+            raise HTTPException(status_code=404, detail="User profile not found")
+
+        user_gender = user_profile['gender'].strip()
+        opposite_gender = "Male" if user_gender.lower() == "female" else "Female"
+
+        # Base query with strict work_location filtering
+        query = """
+            SELECT * FROM matrimony_profiles
+            WHERE gender ILIKE %s
+              AND matrimony_id != %s
+              AND TRIM(work_location) IS NOT NULL
+              AND TRIM(work_location) != ''
+              AND LOWER(TRIM(work_location)) != 'null'
+        """
+        params = [opposite_gender, user_profile['matrimony_id']]
+
+        # Apply location preference filtering
+        if user_profile['preferred_location']:
+            preferred_location_list = [l.strip() for l in user_profile['preferred_location'].split(",") if l.strip()]
+            if preferred_location_list:
+                if case_sensitive:
+                    query += " AND work_location = ANY(%s)"
+                    params.append(preferred_location_list)
+                else:
+                    query += " AND LOWER(work_location) = ANY(%s)"
+                    params.append([loc.lower() for loc in preferred_location_list])
+
+        cur.execute(query, params)
+        profiles = cur.fetchall()
+
+        compatible_profiles = []
+        for profile in profiles:
+            profile_dict = dict(profile)
+
+            # Process media fields
+            profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
+            profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
+            profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
+
+            # Format date_of_birth
+            if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
+                profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
+
+            # Format birth_time
+            if isinstance(profile_dict.get("birth_time"), time):
+                profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
+
+            # Calculate age
+            if profile_dict.get("date_of_birth"):
+                dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
+                today = datetime.today()
+                profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+            compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
+
+        return compatible_profiles
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error retrieving profiles")
+
+    finally:
+        cur.close()
+        conn.close()
+
 
 @app.get("/rashi_compatibility/{rashi1}/{rashi2}")
 def get_rashi_compatibility(rashi1: str, rashi2: str):
