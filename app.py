@@ -417,6 +417,10 @@ class ForgotPasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=6)
     confirm_password: str = Field(..., min_length=6)
 
+class DeactivationReportRequest(BaseModel):
+    matrimony_id: str
+    reason: str
+
 # Full Rashi compatibility data
 RASHI_COMPATIBILITY = {
     ("mesha", "simha"): "High Compatibility",
@@ -2632,7 +2636,7 @@ async def get_matrimony_profiles(
 
         new_profiles = []
         default_profiles = []
-        cutoff_date = datetime.now() - timedelta(days=1)
+        cutoff_date = datetime.now() - timedelta(days=30)
 
         for profile in profiles:
             profile_dict = dict(profile)
@@ -3276,6 +3280,84 @@ async def get_profile_active_status(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+# Reporting the reasons for the user leaving the matrimony
+@app.post("/matrimony/admin/deactivate-report")
+async def report_deactivation(
+    request: DeactivationReportRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Step 1: Deactivate user
+        cur.execute("""
+            UPDATE matrimony_profiles
+            SET is_active = False
+            WHERE matrimony_id = %s
+            RETURNING *;
+        """, (request.matrimony_id,))
+        profile = cur.fetchone()
+
+        if not profile:
+            raise HTTPException(status_code=404, detail="Matrimony ID not found")
+
+        # Step 2: Log reason
+        cur.execute("""
+            INSERT INTO deactivation_reports (matrimony_id, admin_email, reason)
+            VALUES (%s, %s, %s)
+            RETURNING *;
+        """, (
+            request.matrimony_id,
+            current_user.get("email"),
+            request.reason
+        ))
+
+        conn.commit()
+
+        return {
+            "status": "success",
+            "message": "Profile deactivated and reason logged.",
+            "profile": profile
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+@app.get("/matrimony/admin/deactivate-report")
+async def get_deactivation_reports(current_user: Dict[str, Any] = Depends(get_current_user_matrimony)):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            SELECT * FROM deactivation_reports ORDER BY created_at DESC;
+        """)
+        reports = cur.fetchall()
+
+        return {
+            "status": "success",
+            "reports": reports
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 
 # Points mechanism for recharge/ spend
