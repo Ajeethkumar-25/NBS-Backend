@@ -2905,6 +2905,108 @@ async def get_matrimony_preferences(
         cur.close()
         conn.close()
 
+@app.get("/matrimony/caste-preference", response_model=List[MatrimonyProfileResponse])
+async def get_matrimony_caste_preferences(
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
+    case_sensitive: Optional[bool] = Query(default=False)
+):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+
+    def process_s3_url(url, folder_name):
+        if url and isinstance(url, str):
+            if url.startswith("http"):
+                return url
+            return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+        return None
+
+    def process_s3_urls(value, folder_name):
+        if not value:
+            return None
+        if isinstance(value, str):
+            items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+        if not items:
+            return None
+        return [
+            item if item.startswith("http") else
+            f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
+            for item in items
+        ]
+
+    try:
+        # Fetch current user's profile
+        cur.execute("""
+            SELECT matrimony_id, gender, caste
+            FROM matrimony_profiles 
+            WHERE matrimony_id = %s
+        """, [current_user.get("matrimony_id")])
+        user_profile = cur.fetchone()
+
+        if not user_profile:
+            raise HTTPException(status_code=404, detail="User profile not found")
+
+        user_gender = user_profile['gender'].strip()
+        opposite_gender = "Male" if user_gender.lower() == "female" else "Female"
+
+        query = """
+            SELECT * FROM matrimony_profiles
+            WHERE gender ILIKE %s
+              AND matrimony_id != %s
+              AND TRIM(caste) IS NOT NULL
+              AND TRIM(caste) != ''
+              AND LOWER(TRIM(caste)) != 'null'
+        """
+        params = [opposite_gender, user_profile['matrimony_id']]
+
+        # Apply caste preference filtering
+        if user_profile['caste']:
+            user_castes = [c.strip() for c in user_profile['caste'].split(',') if c.strip()]
+            if user_castes:
+                if case_sensitive:
+                    query += " AND caste = ANY(%s)"
+                    params.append(user_castes)
+                else:
+                    query += " AND LOWER(caste) = ANY(%s)"
+                    params.append([c.lower() for c in user_castes])
+
+        cur.execute(query, params)
+        profiles = cur.fetchall()
+
+        compatible_profiles = []
+        for profile in profiles:
+            profile_dict = dict(profile)
+
+            profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
+            profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
+            profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
+
+            if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
+                profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
+
+            if isinstance(profile_dict.get("birth_time"), time):
+                profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
+
+            if profile_dict.get("date_of_birth"):
+                dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
+                today = datetime.today()
+                profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+            compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
+
+        return compatible_profiles
+
+    except Exception:
+        raise HTTPException(status_code=500, detail="Error retrieving caste preference profiles")
+
+    finally:
+        cur.close()
+        conn.close()
+
+
 
 @app.get("/rashi_compatibility/{rashi1}/{rashi2}")
 def get_rashi_compatibility(rashi1: str, rashi2: str):
@@ -3055,6 +3157,42 @@ async def update_my_profile(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
+
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+
+@app.delete("/matrimony/delete-my_profiles")
+async def delete_profile_by_id(
+    matrimony_id: str = Query(..., description="Matrimony ID of the profile to delete"),
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Ensure the user is deleting their own profile
+        if matrimony_id != current_user.get("matrimony_id"):
+            raise HTTPException(status_code=403, detail="You are not authorized to delete this profile")
+
+        cur.execute(
+            "DELETE FROM matrimony_profiles WHERE matrimony_id = %s RETURNING *;",
+            (matrimony_id,)
+        )
+        deleted_profile = cur.fetchone()
+
+        if not deleted_profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        conn.commit()
+
+        return {"status": "success", "message": f"Profile with ID {matrimony_id} deleted"}
+
+    except psycopg2.Error as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     finally:
         if 'cur' in locals():
