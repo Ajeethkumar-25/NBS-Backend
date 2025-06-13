@@ -3281,6 +3281,7 @@ async def get_profile_active_status(
         if 'conn' in locals(): conn.close()
 
 # Reporting the reasons for the user leaving the matrimony
+# Reporting the reasons for the user leaving the matrimony
 @app.post("/matrimony/admin/deactivate-report")
 async def report_deactivation(
     request: DeactivationReportRequest,
@@ -3292,6 +3293,19 @@ async def report_deactivation(
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check if report already exists
+        cur.execute("""
+            SELECT id FROM deactivation_reports
+            WHERE matrimony_id = %s
+        """, (request.matrimony_id,))
+        existing = cur.fetchone()
+
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="A deactivation report already exists for this user."
+            )
 
         # Step 1: Deactivate user
         cur.execute("""
@@ -3309,6 +3323,8 @@ async def report_deactivation(
         cur.execute("""
             INSERT INTO deactivation_reports (matrimony_id, admin_email, reason)
             VALUES (%s, %s, %s)
+            ON CONFLICT (matrimony_id)
+            DO UPDATE SET reason = EXCLUDED.reason, admin_email = EXCLUDED.admin_email, created_at = CURRENT_TIMESTAMP
             RETURNING *;
         """, (
             request.matrimony_id,
@@ -3326,11 +3342,14 @@ async def report_deactivation(
 
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
     finally:
-        if 'cur' in locals(): cur.close()
-        if 'conn' in locals(): conn.close()
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+
 
 @app.get("/matrimony/admin/deactivate-report")
 async def get_deactivation_reports(current_user: Dict[str, Any] = Depends(get_current_user_matrimony)):
