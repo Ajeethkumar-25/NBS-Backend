@@ -3200,6 +3200,84 @@ async def delete_profile_by_id(
         if 'conn' in locals():
             conn.close()
 
+# active/ Inactive Status in the profiles 
+@app.post("/matrimony/my_profiles/activate")
+async def set_profile_active_status(
+    is_active: bool = Body(..., embed=True, description="Set to true to activate, false to deactivate"),
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    matrimony_id = current_user.get("matrimony_id")
+    if not matrimony_id:
+        raise HTTPException(status_code=400, detail="Matrimony ID missing")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            UPDATE matrimony_profiles
+            SET is_active = %s
+            WHERE matrimony_id = %s
+            RETURNING *;
+        """, (is_active, matrimony_id))
+
+        updated_profile = cur.fetchone()
+        if not updated_profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        conn.commit()
+        return {
+            "status": "success",
+            "message": f"Profile {'activated' if is_active else 'deactivated'} successfully.",
+            "profile": updated_profile
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+@app.get("/matrimony/my_profiles/activate")
+async def get_profile_active_status(
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    matrimony_id = current_user.get("matrimony_id")
+    if not matrimony_id:
+        raise HTTPException(status_code=400, detail="Matrimony ID missing")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            SELECT matrimony_id, is_active
+            FROM matrimony_profiles
+            WHERE matrimony_id = %s;
+        """, (matrimony_id,))
+        result = cur.fetchone()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        return {
+            "status": "success",
+            "matrimony_id": result["matrimony_id"],
+            "is_active": result["is_active"]
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
+
 # Points mechanism for recharge/ spend
 @app.post("/wallet/recharge")
 async def recharge_wallet(
