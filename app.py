@@ -2559,11 +2559,6 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
         if conn:
             conn.close()
 
-from datetime import datetime, timedelta, date, time
-from typing import List, Dict, Any, Optional
-from fastapi import Query, Depends, HTTPException
-from pydantic import ValidationError
-
 @app.get("/matrimony/profiles", response_model=Dict[str, List[MatrimonyProfileResponse]])
 async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
@@ -2579,7 +2574,8 @@ async def get_matrimony_profiles(
         query = "SELECT * FROM matrimony_profiles WHERE 1=1"
         params = []
 
-        if current_user["user_type"] != "admin":
+        # Apply gender-based filter for non-admin users
+        if current_user["user_type"].lower() != "admin":
             user_gender = current_user.get("gender")
             if not user_gender:
                 raise HTTPException(status_code=400, detail="User gender not found")
@@ -2587,14 +2583,19 @@ async def get_matrimony_profiles(
             query += " AND gender ILIKE %s"
             params.append(opposite_gender)
             logger.info(f"Filtering opposite gender: {opposite_gender}")
+        else:
+            logger.info("Admin user detected - fetching all profiles")
 
         cur.execute(query, params)
         profiles = cur.fetchall()
         logger.info(f"Fetched profiles count: {len(profiles)}")
 
         if not profiles:
+            if current_user["user_type"].lower() == "admin":
+                return {"Profiles": []}
             return {"New Profiles": [], "Default Profiles": []}
 
+        # Setup translator if needed
         translator = None
         if language and language.lower() != "en":
             try:
@@ -2637,6 +2638,7 @@ async def get_matrimony_profiles(
 
         new_profiles = []
         default_profiles = []
+        all_profiles = []
         cutoff_date = datetime.now() - timedelta(days=30)
 
         for profile in profiles:
@@ -2685,19 +2687,28 @@ async def get_matrimony_profiles(
             try:
                 profile_obj = MatrimonyProfileResponse(**profile_dict)
                 updated_at = profile.get("updated_at")
-                if updated_at and isinstance(updated_at, datetime) and updated_at >= cutoff_date:
-                    new_profiles.append(profile_obj)
+
+                if current_user["user_type"].lower() == "admin":
+                    all_profiles.append(profile_obj)
                 else:
-                    default_profiles.append(profile_obj)
+                    if updated_at and isinstance(updated_at, datetime) and updated_at >= cutoff_date:
+                        new_profiles.append(profile_obj)
+                    else:
+                        default_profiles.append(profile_obj)
             except ValidationError as e:
                 logger.error(f"Validation error for {profile_dict.get('matrimony_id')}: {e}")
                 continue
 
-        logger.info(f"Returning {len(new_profiles)} new and {len(default_profiles)} default profiles")
-        return {
-            "New Profiles": new_profiles,
-            "Default Profiles": default_profiles
-        }
+        # Return based on user type
+        if current_user["user_type"].lower() == "admin":
+            logger.info(f"Admin view: Returning all profiles (count: {len(all_profiles)})")
+            return {"Profiles": all_profiles}
+        else:
+            logger.info(f"User view: Returning {len(new_profiles)} new and {len(default_profiles)} default profiles")
+            return {
+                "New Profiles": new_profiles,
+                "Default Profiles": default_profiles
+            }
 
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
