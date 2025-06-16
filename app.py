@@ -2230,7 +2230,8 @@ async def register_matrimony(
     photo: Optional[UploadFile] = File(None),
     photos: Optional[List[UploadFile]] = File(None),
     horoscope_documents: Optional[List[UploadFile]] = File(None),
-    matrimony_id: Optional[str] = Form(None)
+    matrimony_id: Optional[str] = Form(None),
+    blood_group: Optional[str] = Form(None)
 
 ):
     try:
@@ -2292,7 +2293,7 @@ async def register_matrimony(
             preferred_height_min, preferred_height_max, preferred_religion,
             preferred_caste, preferred_sub_caste, preferred_nakshatra,
             preferred_rashi, preferred_location, preferred_work_status,
-            photo_url, photos_array, horoscope_array, dhosham, other_dhosham, quarter, marital_status
+            photo_url, photos_array, horoscope_array, dhosham, other_dhosham, quarter, marital_status, blood_group
         ])
 
         conn = psycopg2.connect(**settings.DB_CONFIG)
@@ -2312,7 +2313,7 @@ async def register_matrimony(
             preferred_religion, preferred_caste, preferred_sub_caste,
             preferred_nakshatra, preferred_rashi, preferred_location,
             preferred_work_status, photo_path, photos, 
-            horoscope_documents, dhosham, other_dhosham, quarter, marital_status
+            horoscope_documents, dhosham, other_dhosham, quarter, marital_status, blood_group
         ) VALUES (
             {','.join(['%s'] * len(values))}
         ) ON CONFLICT (email) DO NOTHING
@@ -3177,10 +3178,16 @@ async def delete_profile_by_id(
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Ensure the user is deleting their own profile
         if matrimony_id != current_user.get("matrimony_id"):
             raise HTTPException(status_code=403, detail="You are not authorized to delete this profile")
 
+        # Delete dependent refresh tokens first
+        cur.execute(
+            "DELETE FROM matrimony_refresh_tokens WHERE matrimony_id = %s;",
+            (matrimony_id,)
+        )
+
+        # Now delete the profile
         cur.execute(
             "DELETE FROM matrimony_profiles WHERE matrimony_id = %s RETURNING *;",
             (matrimony_id,)
@@ -3191,7 +3198,6 @@ async def delete_profile_by_id(
             raise HTTPException(status_code=404, detail="Profile not found")
 
         conn.commit()
-
         return {"status": "success", "message": f"Profile with ID {matrimony_id} deleted"}
 
     except psycopg2.Error as e:
@@ -3199,10 +3205,8 @@ async def delete_profile_by_id(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     finally:
-        if 'cur' in locals():
-            cur.close()
-        if 'conn' in locals():
-            conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 # active/ Inactive Status in the profiles 
 @app.post("/matrimony/my_profiles/activate")
