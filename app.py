@@ -3298,13 +3298,13 @@ async def get_profile_active_status(
         if 'conn' in locals(): conn.close()
 
 # Reporting the reasons for the user leaving the matrimony
-@app.post("/matrimony/admin/deactivate-report")
+@app.post("/matrimony/user/deactivate-report")  # changed from /admin/...
 async def report_deactivation(
     request: DeactivationReportRequest,
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
 ):
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
+    if current_user.get("user_type") != "user":
+        raise HTTPException(status_code=403, detail="Only users can access this endpoint")
 
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
@@ -3356,6 +3356,8 @@ async def report_deactivation(
             "profile": profile
         }
 
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
@@ -3365,8 +3367,7 @@ async def report_deactivation(
             cur.close()
         if 'conn' in locals():
             conn.close()
-
-
+    
 @app.get("/matrimony/admin/deactivate-report")
 async def get_deactivation_reports(current_user: Dict[str, Any] = Depends(get_current_user_matrimony)):
     if current_user.get("user_type") != "admin":
@@ -3878,6 +3879,39 @@ async def forgot_password(request: ForgotPasswordRequest):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+# Chat-bot for  USER <--> ADMIN
+from pydantic import BaseModel
+
+class ChatRequest(BaseModel):
+    message: str
+
+@app.post("/matrimony/chat/send")
+async def send_message(
+    request: ChatRequest,
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        sender_id = current_user.get("matrimony_id")
+        admin_id = current_user.get("email")
+
+        cur.execute(
+            "INSERT INTO matrimony_chats (sender_id, receiver_id, message) VALUES (%s, %s, %s)",
+            (sender_id, admin_id, request.message)
+        )
+        conn.commit()
+
+        return {"status": "success", "message": "Message sent to admin"}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
