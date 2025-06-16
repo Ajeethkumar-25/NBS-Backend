@@ -367,7 +367,9 @@ class MatrimonyProfileResponse(BaseModel):
     horoscope_documents: Optional[List[str]] = []
     dhosham: Optional[str]
     other_dhosham: Optional[str]    
-    quarter: Optional[str]    
+    quarter: Optional[str]
+    is_active: Optional[str]
+    blood_group: Optional[str]
 
 class OTPRequest(BaseModel):
     mobile_number: str
@@ -2571,7 +2573,7 @@ async def get_matrimony_profiles(
         logger.info(f"Current user: {current_user}")
         logger.info(f"Requested language: {language}")
 
-        query = "SELECT * FROM matrimony_profiles WHERE 1=1"
+        query = "SELECT * FROM matrimony_profiles WHERE is_active = true"
         params = []
 
         # Apply gender-based filter for non-admin users
@@ -3295,7 +3297,6 @@ async def get_profile_active_status(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-# Reporting the reasons for the user leaving the matrimony
 # Reporting the reasons for the user leaving the matrimony
 @app.post("/matrimony/admin/deactivate-report")
 async def report_deactivation(
