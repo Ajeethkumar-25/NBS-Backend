@@ -3689,8 +3689,8 @@ async def mark_favorite_profiles(
 
             cur.execute("SELECT 1 FROM favorite_profiles WHERE matrimony_id = %s AND favorite_profile_id = %s", (matrimony_id, fav_id))
             if cur.fetchone():
-                continue  # already favorited, skip
-
+                continue  
+            
             cur.execute("""
                 INSERT INTO favorite_profiles (matrimony_id, favorite_profile_id)
                 VALUES (%s, %s) RETURNING favorite_profile_id
@@ -3767,6 +3767,7 @@ async def get_favorite_profiles(
             FROM favorite_profiles fp
             JOIN matrimony_profiles mp ON fp.favorite_profile_id = mp.matrimony_id
             WHERE fp.matrimony_id = %s
+            AND is_active = TRUE
         """
         params = [matrimony_id]
 
@@ -3885,8 +3886,6 @@ async def forgot_password(request: ForgotPasswordRequest):
         if 'conn' in locals(): conn.close()
 
 # Chat-bot for  USER <--> ADMIN
-from pydantic import BaseModel
-
 class ChatRequest(BaseModel):
     message: str
     admin_email: EmailStr
