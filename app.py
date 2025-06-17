@@ -3,8 +3,7 @@ from botocore.exceptions import NoCredentialsError, ClientError
 import tempfile
 import bcrypt
 import re
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form, Body
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form, Body
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form, Body, Request
 from typing import Optional
 from fastapi.security import OAuth2PasswordBearer
 # from fastapi.security import OAuth2PasswordRequestForm
@@ -3120,35 +3119,167 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
             conn.close()
 
 @app.put("/matrimony/my_profiles")
-async def update_my_profile(
-    profile_data: dict = Body(...),  # Accept dynamic fields in JSON body
+async def update_matrimony_profile(
+    request: Request,
+    full_name: Optional[str] = Form(None),
+    age: Optional[str] = Form(None),
+    gender: Optional[str] = Form(None),
+    date_of_birth: Optional[str] = Form(None),
+    email: Optional[EmailStr] = Form(None),
+    password: Optional[str] = Form(None),
+    phone_number: Optional[str] = Form(None),
+    height: Optional[str] = Form(None),
+    weight: Optional[str] = Form(None),
+    occupation: Optional[str] = Form(None),
+    annual_income: Optional[str] = Form(None),
+    education: Optional[str] = Form(None),
+    mother_tongue: Optional[str] = Form(None),
+    profile_created_by: Optional[str] = Form(None),
+    address: Optional[str] = Form(None),
+    work_type: Optional[str] = Form(None),
+    company: Optional[str] = Form(None),
+    work_location: Optional[str] = Form(None),
+    work_country: Optional[str] = Form(None),
+    mother_name: Optional[str] = Form(None),
+    father_name: Optional[str] = Form(None),
+    sibling_count: Optional[str] = Form(None),
+    elder_brother: Optional[str] = Form(None),
+    elder_sister: Optional[str] = Form(None),
+    younger_sister: Optional[str] = Form(None),
+    younger_brother: Optional[str] = Form(None),
+    native: Optional[str] = Form(None),
+    mother_occupation: Optional[str] = Form(None),
+    father_occupation: Optional[str] = Form(None),
+    religion: Optional[str] = Form(None),
+    caste: Optional[str] = Form(None),
+    sub_caste: Optional[str] = Form(None),
+    nakshatra: Optional[str] = Form(None),
+    rashi: Optional[str] = Form(None),
+    birth_time: Optional[str] = Form(None),
+    birth_place: Optional[str] = Form(None),
+    ascendent: Optional[str] = Form(None),
+    user_type: Optional[str] = Form(None),
+    marital_status: Optional[str] = Form(None),
+    preferred_age_min: Optional[str] = Form(None),
+    preferred_age_max: Optional[str] = Form(None),
+    preferred_height_min: Optional[str] = Form(None),
+    preferred_height_max: Optional[str] = Form(None),
+    preferred_religion: Optional[str] = Form(None),
+    preferred_caste: Optional[str] = Form(None),
+    preferred_sub_caste: Optional[str] = Form(None),
+    preferred_nakshatra: Optional[str] = Form(None),
+    preferred_rashi: Optional[str] = Form(None),
+    preferred_location: Optional[str] = Form(None),
+    preferred_work_status: Optional[str] = Form(None),
+    photo: Optional[UploadFile] = File(None),
+    photos: Optional[List[UploadFile]] = File(None),
+    horoscope_documents: Optional[List[UploadFile]] = File(None),
+    blood_group: Optional[str] = Form(None),
+    dhosham: Optional[str] = Form(None),
+    other_dhosham: Optional[str] = Form(None),
+    quarter: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
-    email = current_user.get("email")
-    matrimony_id = current_user.get("matrimony_id")
-
-    if not email and not matrimony_id:
-        raise HTTPException(status_code=400, detail="No valid identifier found in token")
-
-    if not profile_data:
-        raise HTTPException(status_code=400, detail="No data provided to update")
-
     try:
+        matrimony_id = current_user.get("matrimony_id")
+        if not matrimony_id:
+            raise HTTPException(status_code=401, detail="Invalid user session")
+
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        s3_handler = S3Handler()
 
-        # Build dynamic SET clause
-        set_clauses = []
-        values = {}
-        for idx, (key, value) in enumerate(profile_data.items()):
-            set_clauses.append(f"{key} = %(val{idx})s")
-            values[f"val{idx}"] = value
+        # Add only form parameters to this dict
+        update_fields = {
+            k: v for k, v in {
+                "full_name": full_name,
+                "age": age,
+                "gender": gender,
+                "date_of_birth": date_of_birth,
+                "email": email,
+                "password": pwd_context.hash(password) if password else None,
+                "phone_number": phone_number,
+                "height": height,
+                "weight": weight,
+                "occupation": occupation,
+                "annual_income": annual_income,
+                "education": education,
+                "mother_tongue": mother_tongue,
+                "profile_created_by": profile_created_by,
+                "address": address,
+                "work_type": work_type,
+                "company": company,
+                "work_location": work_location,
+                "work_country": work_country,
+                "mother_name": mother_name,
+                "father_name": father_name,
+                "sibling_count": sibling_count,
+                "elder_brother": elder_brother,
+                "elder_sister": elder_sister,
+                "younger_sister": younger_sister,
+                "younger_brother": younger_brother,
+                "native": native,
+                "mother_occupation": mother_occupation,
+                "father_occupation": father_occupation,
+                "religion": religion,
+                "caste": caste,
+                "sub_caste": sub_caste,
+                "nakshatra": nakshatra,
+                "rashi": rashi,
+                "birth_time": birth_time,
+                "birth_place": birth_place,
+                "ascendent": ascendent,
+                "user_type": user_type,
+                "marital_status": marital_status,
+                "preferred_age_min": preferred_age_min,
+                "preferred_age_max": preferred_age_max,
+                "preferred_height_min": preferred_height_min,
+                "preferred_height_max": preferred_height_max,
+                "preferred_religion": preferred_religion,
+                "preferred_caste": preferred_caste,
+                "preferred_sub_caste": preferred_sub_caste,
+                "preferred_nakshatra": preferred_nakshatra,
+                "preferred_rashi": preferred_rashi,
+                "preferred_location": preferred_location,
+                "preferred_work_status": preferred_work_status,
+                "blood_group": blood_group,
+                "dhosham": dhosham,
+                "other_dhosham": other_dhosham,
+                "quarter": quarter,
+            }.items() if v is not None
+        }
 
-        set_clause = ", ".join(set_clauses)
-        values["email"] = email
-        values["matrimony_id"] = matrimony_id
+        # Upload photo
+        if photo:
+            photo_url = s3_handler.upload_to_s3(photo, "profile_photos")
+            update_fields["photo_path"] = photo_url
 
-        query = f"""
+        # Upload multiple photos
+        if photos:
+            photo_urls = []
+            for file in photos:
+                url = s3_handler.upload_to_s3(file, "photos")
+                photo_urls.append(url)
+            update_fields["photos"] = "{" + ",".join(photo_urls) + "}"
+
+        # Upload horoscopes
+        if horoscope_documents:
+            horoscope_urls = []
+            for file in horoscope_documents:
+                url = s3_handler.upload_to_s3(file, "horoscopes")
+                horoscope_urls.append(url)
+            update_fields["horoscope_documents"] = "{" + ",".join(horoscope_urls) + "}"
+
+        if not update_fields:
+            raise HTTPException(status_code=400, detail="No fields provided for update")
+
+        # Add filters
+        update_fields["email"] = email
+        update_fields["matrimony_id"] = matrimony_id
+
+        set_clause = ", ".join([f"{key} = %({key})s" for key in update_fields if key not in ['email', 'matrimony_id']])
+
+        update_query = f"""
         UPDATE matrimony_profiles
         SET {set_clause}
         WHERE (%(email)s IS NULL OR email = %(email)s)
@@ -3156,16 +3287,16 @@ async def update_my_profile(
         RETURNING *;
         """
 
-        cur.execute(query, values)
+        cur.execute(update_query, update_fields)
         updated_profile = cur.fetchone()
+        conn.commit()
 
         if not updated_profile:
-            raise HTTPException(status_code=404, detail="Profile not found or nothing updated")
-
-        conn.commit()
+            raise HTTPException(status_code=404, detail="Profile not found or not updated")
 
         return {
             "status": "success",
+            "message": "Profile updated successfully",
             "profile": updated_profile
         }
 
@@ -3178,10 +3309,10 @@ async def update_my_profile(
         raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
 
     finally:
-        if 'cur' in locals():
-            cur.close()
-        if 'conn' in locals():
-            conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
 
 @app.delete("/matrimony/delete-my_profiles")
 async def delete_profile_by_id(
@@ -3690,7 +3821,6 @@ async def mark_favorite_profiles(
             cur.execute("SELECT 1 FROM favorite_profiles WHERE matrimony_id = %s AND favorite_profile_id = %s", (matrimony_id, fav_id))
             if cur.fetchone():
                 continue  
-            
             cur.execute("""
                 INSERT INTO favorite_profiles (matrimony_id, favorite_profile_id)
                 VALUES (%s, %s) RETURNING favorite_profile_id
