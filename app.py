@@ -420,6 +420,17 @@ class DeactivationReportRequest(BaseModel):
     matrimony_id: str
     reason: str
 
+class ChatRequest(BaseModel):
+    message: str
+    sender_id: str
+    receiver_email: EmailStr
+
+class AdminChatMessage(BaseModel):
+    sender_id: str
+    receiver_id: str
+    message: str
+    timestamp: datetime  
+
 # Full Rashi compatibility data
 RASHI_COMPATIBILITY = {
     ("mesha", "simha"): "High Compatibility",
@@ -4015,89 +4026,95 @@ async def forgot_password(request: ForgotPasswordRequest):
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-# Chat-bot for  USER <--> ADMIN
-class ChatRequest(BaseModel):
-    message: str
-    admin_email: EmailStr
+# ------------------- SEND MESSAGE (User → Admin) -------------------
 
 @app.post("/matrimony/chat/send")
-async def send_message(
-    request: ChatRequest,
-    current_user: dict = Depends(get_current_user_matrimony)
-):
+async def send_message(request: ChatRequest):
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        sender_id = current_user.get("matrimony_id")
+        # If sender is admin, resolve receiver_email to user's matrimony_id
+        if request.sender_id.lower() == "admin":
+            cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s AND user_type = 'user'", (request.receiver_email,))
+            user_result = cur.fetchone()
+            if not user_result:
+                raise HTTPException(status_code=404, detail="User not found with provided email")
+            receiver_id = user_result[0]
 
-        # Step 1: Fetch admin's matrimony_id using email
-        cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s", (request.admin_email,))
-        admin_result = cur.fetchone()
+        else:
+            # Sender is a user → receiver must be the admin → use 'admin' as ID
+            cur.execute("SELECT 1 FROM matrimony_profiles WHERE matrimony_id = %s", (request.sender_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Sender (user) not found")
 
-        if not admin_result:
-            raise HTTPException(status_code=404, detail="Admin not found with provided email")
+            # Check admin email exists
+            cur.execute("SELECT 1 FROM matrimony_profiles WHERE email = %s AND user_type = 'admin'", (request.receiver_email,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Admin not found with provided email")
 
-        admin_id = admin_result[0]
+            receiver_id = "admin"
 
-        # Step 2: Insert message
-        cur.execute(
-            "INSERT INTO matrimony_chats (sender_id, receiver_id, message) VALUES (%s, %s, %s)",
-            (sender_id, admin_id, request.message)
-        )
+        # Insert message
+        cur.execute("""
+            INSERT INTO matrimony_chats (sender_id, receiver_id, message) 
+            VALUES (%s, %s, %s)
+        """, (request.sender_id, receiver_id, request.message))
         conn.commit()
 
-        return {"status": "success", 
-                "message": "Message sent to admin",
-                "matrimony_id": current_user["matrimony_id"]}
+        return {
+            "status": "success",
+            "message": "Message sent ",
+            "sender_id": request.sender_id,
+            "receiver_id": receiver_id
+        }
 
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-class AdminChatMessage(BaseModel):
-    sender_id: str
-    receiver_id: str  # This will be the email (admin's email)
-    message: str
-    timestamp: str
-
 @app.get("/matrimony/chat/admin/messages", response_model=List[AdminChatMessage])
 async def get_user_chat_as_admin(
-    matrimony_id: str = Query(..., description="User's matrimony ID"),
-    current_user: dict = Depends(get_current_user_matrimony)
+    matrimony_id: str = Query(...),
+    admin_email: EmailStr = Query(...)
 ):
     try:
-        # Ensure only admin can access
-        if current_user.get("user_type") != "admin":
-            raise HTTPException(status_code=403, detail="Only admin is allowed to view user chats")
-
-        admin_email = current_user.get("email")  
         conn = psycopg2.connect(**settings.DB_CONFIG)
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur = conn.cursor()
 
+        # Validate admin
+        cur.execute("""
+            SELECT 1 
+            FROM matrimony_profiles 
+            WHERE email = %s AND user_type = 'admin'
+        """, (admin_email,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Admin not found")
+
+        # Fetch all messages between the user and admin
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             SELECT sender_id, receiver_id, message, timestamp
             FROM matrimony_chats
-            WHERE (sender_id = %s AND receiver_id = %s)
-               OR (sender_id = %s AND receiver_id = %s)
-            ORDER BY timestamp ASC;                                                                                                                                                                                             
-        """, (admin_email, matrimony_id, matrimony_id, admin_email))
+            WHERE (sender_id = %s AND receiver_id = 'admin')
+               OR (sender_id = 'admin' AND receiver_id = %s)
+            ORDER BY timestamp ASC
+        """, (matrimony_id, matrimony_id))
 
         messages = cur.fetchall()
         return messages
 
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
 
 # Run the application
 if __name__ == "__main__":
