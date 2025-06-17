@@ -2768,6 +2768,7 @@ async def get_matrimony_preferences(
             SELECT * FROM matrimony_profiles
             WHERE gender ILIKE %s
               AND matrimony_id != %s
+              AND is_active = TRUE
         """
         params = [opposite_gender, user_profile['matrimony_id']]
 
@@ -2870,6 +2871,7 @@ async def get_matrimony_preferences(
               AND TRIM(work_location) IS NOT NULL
               AND TRIM(work_location) != ''
               AND LOWER(TRIM(work_location)) != 'null'
+              AND is_active = TRUE
         """
         params = [opposite_gender, user_profile['matrimony_id']]
 
@@ -2975,6 +2977,7 @@ async def get_matrimony_caste_preferences(
               AND TRIM(caste) IS NOT NULL
               AND TRIM(caste) != ''
               AND LOWER(TRIM(caste)) != 'null'
+              AND is_active = TRUE
         """
         params = [opposite_gender, user_profile['matrimony_id']]
 
