@@ -3298,7 +3298,7 @@ async def get_profile_active_status(
         if 'conn' in locals(): conn.close()
 
 # Reporting the reasons for the user leaving the matrimony
-@app.post("/matrimony/user/deactivate-report")  # changed from /admin/...
+@app.post("/matrimony/user/deactivate-report") 
 async def report_deactivation(
     request: DeactivationReportRequest,
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
@@ -3319,7 +3319,7 @@ async def report_deactivation(
 
         if existing:
             raise HTTPException(
-                status_code=400,
+                status_code=200,
                 detail="A deactivation report already exists for this user."
             )
 
@@ -3367,7 +3367,7 @@ async def report_deactivation(
             cur.close()
         if 'conn' in locals():
             conn.close()
-    
+
 @app.get("/matrimony/admin/deactivate-report")
 async def get_deactivation_reports(current_user: Dict[str, Any] = Depends(get_current_user_matrimony)):
     if current_user.get("user_type") != "admin":
@@ -3888,6 +3888,7 @@ from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
     message: str
+    admin_email: EmailStr
 
 @app.post("/matrimony/chat/send")
 async def send_message(
@@ -3899,19 +3900,70 @@ async def send_message(
         cur = conn.cursor()
 
         sender_id = current_user.get("matrimony_id")
-        admin_id = current_user.get("email")
 
+        # Step 1: Fetch admin's matrimony_id using email
+        cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s", (request.admin_email,))
+        admin_result = cur.fetchone()
+
+        if not admin_result:
+            raise HTTPException(status_code=404, detail="Admin not found with provided email")
+
+        admin_id = admin_result[0]
+
+        # Step 2: Insert message
         cur.execute(
             "INSERT INTO matrimony_chats (sender_id, receiver_id, message) VALUES (%s, %s, %s)",
             (sender_id, admin_id, request.message)
         )
         conn.commit()
 
-        return {"status": "success", "message": "Message sent to admin"}
+        return {"status": "success", 
+                "message": "Message sent to admin",
+                "matrimony_id": current_user["matrimony_id"]}
 
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+class AdminChatMessage(BaseModel):
+    sender_id: str
+    receiver_id: str  # This will be the email (admin's email)
+    message: str
+    timestamp: str
+
+@app.get("/matrimony/chat/admin/messages", response_model=List[AdminChatMessage])
+async def get_user_chat_as_admin(
+    matrimony_id: str = Query(..., description="User's matrimony ID"),
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    try:
+        # Ensure only admin can access
+        if current_user.get("user_type") != "admin":
+            raise HTTPException(status_code=403, detail="Only admin is allowed to view user chats")
+
+        admin_email = current_user.get("email")  
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            SELECT sender_id, receiver_id, message, timestamp
+            FROM matrimony_chats
+            WHERE (sender_id = %s AND receiver_id = %s)
+               OR (sender_id = %s AND receiver_id = %s)
+            ORDER BY timestamp ASC;                                                                                                                                                                                             
+        """, (admin_email, matrimony_id, matrimony_id, admin_email))
+
+        messages = cur.fetchall()
+        return messages
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
