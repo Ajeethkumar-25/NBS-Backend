@@ -4028,44 +4028,39 @@ async def forgot_password(request: ForgotPasswordRequest):
 
 # ------------------- SEND MESSAGE (User → Admin) -------------------
 
-@app.post("/matrimony/chat/send")
-async def send_message(request: ChatRequest):
+@app.post("/matrimony/chat/user-to-admin")
+async def user_to_admin_chat(
+    request: ChatRequest,
+    current_user: dict = Depends(get_current_user_matrimony)
+):
     try:
+        if current_user["user_type"] != "user":
+            raise HTTPException(status_code=403, detail="Only users can access this endpoint")
+
+        sender_id = current_user["matrimony_id"]
+        admin_email = request.receiver_email
+
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        # If sender is admin, resolve receiver_email to user's matrimony_id
-        if request.sender_id.lower() == "admin":
-            cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s AND user_type = 'user'", (request.receiver_email,))
-            user_result = cur.fetchone()
-            if not user_result:
-                raise HTTPException(status_code=404, detail="User not found with provided email")
-            receiver_id = user_result[0]
+        # Validate admin existence
+        cur.execute("SELECT 1 FROM users WHERE email = %s AND user_type = 'admin'", (admin_email,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Admin not found with provided email")
 
-        else:
-            # Sender is a user → receiver must be the admin → use 'admin' as ID
-            cur.execute("SELECT 1 FROM matrimony_profiles WHERE matrimony_id = %s", (request.sender_id,))
-            if not cur.fetchone():
-                raise HTTPException(status_code=404, detail="Sender (user) not found")
-
-            # Check admin email exists
-            cur.execute("SELECT 1 FROM matrimony_profiles WHERE email = %s AND user_type = 'admin'", (request.receiver_email,))
-            if not cur.fetchone():
-                raise HTTPException(status_code=404, detail="Admin not found with provided email")
-
-            receiver_id = "admin"
+        receiver_id = "admin"
 
         # Insert message
         cur.execute("""
             INSERT INTO matrimony_chats (sender_id, receiver_id, message) 
             VALUES (%s, %s, %s)
-        """, (request.sender_id, receiver_id, request.message))
+        """, (sender_id, receiver_id, request.message))
         conn.commit()
 
         return {
             "status": "success",
-            "message": "Message sent ",
-            "sender_id": request.sender_id,
+            "message": request.message,
+            "sender_id": sender_id,
             "receiver_id": receiver_id
         }
 
@@ -4077,26 +4072,66 @@ async def send_message(request: ChatRequest):
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-@app.get("/matrimony/chat/admin/messages", response_model=List[AdminChatMessage])
-async def get_user_chat_as_admin(
-    matrimony_id: str = Query(...),
-    admin_email: EmailStr = Query(...)
+@app.post("/matrimony/chat/admin-to-user")
+async def admin_to_user_chat(
+    request: ChatRequest,
+    current_user: dict = Depends(get_current_user_matrimony)
 ):
     try:
+        if current_user["user_type"] != "admin":
+            raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
+
+        sender_id = "admin"
+        user_email = request.receiver_email
+
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        # Validate admin
+        # Resolve user's matrimony_id
+        cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s AND user_type = 'user'", (user_email,))
+        user_result = cur.fetchone()
+        if not user_result:
+            raise HTTPException(status_code=404, detail="User not found with provided email")
+
+        receiver_id = user_result[0]
+
+        # Insert message
         cur.execute("""
-            SELECT 1 
-            FROM matrimony_profiles 
-            WHERE email = %s AND user_type = 'admin'
-        """, (admin_email,))
-        if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="Admin not found")
+            INSERT INTO matrimony_chats (sender_id, receiver_id, message) 
+            VALUES (%s, %s, %s)
+        """, (sender_id, receiver_id, request.message))
+        conn.commit()
+
+        return {
+            "status": "success",
+            "message": request.message,
+            "sender_id": sender_id,
+            "receiver_id": receiver_id
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
+@app.get("/matrimony/chat/admin/messages", response_model=List[AdminChatMessage])
+async def get_user_chat_as_admin(
+    matrimony_id: str = Query(...),
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    try:
+        # Ensure the user is an admin
+        if current_user["user_type"] != "admin":
+            raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
+
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
 
         # Fetch all messages between the user and admin
-        cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             SELECT sender_id, receiver_id, message, timestamp
             FROM matrimony_chats
