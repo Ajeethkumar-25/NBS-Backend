@@ -3540,7 +3540,7 @@ async def get_deactivation_reports(
                 mp.full_name
             FROM deactivation_reports dr
             LEFT JOIN matrimony_profiles mp ON dr.matrimony_id = mp.matrimony_id
-            ORDER BY dr.timestamp DESC
+            ORDER BY dr.created_at DESC
         """)
         reports = cur.fetchall()
 
