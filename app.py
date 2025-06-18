@@ -690,38 +690,38 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
     except PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     
-def get_current_user_matrimony(token: str) -> Dict[str, Any]:
-    try:
-        payload = jwt.decode(token, "your_secret_key", algorithms=["HS256"])
-        user_id = payload.get("sub")
-        user_type = payload.get("user_type")
+# def get_current_user_matrimony(token: str) -> Dict[str, Any]:
+#     try:
+#         payload = jwt.decode(token, "your_secret_key", algorithms=["HS256"])
+#         user_id = payload.get("sub")
+#         user_type = payload.get("user_type")
         
-        if not user_id or not user_type:
-            raise HTTPException(status_code=401, detail="Invalid authentication token")
+#         if not user_id or not user_type:
+#             raise HTTPException(status_code=401, detail="Invalid authentication token")
         
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=DictCursor)
+#         conn = get_db_connection()
+#         cur = conn.cursor(cursor_factory=DictCursor)
         
-        if user_type == "admin":
-            cur.execute("SELECT id, email, user_type FROM users WHERE email = %s", (user_id,))
-        else:
-            cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (user_id,))
+#         if user_type == "admin":
+#             cur.execute("SELECT id, email, user_type FROM users WHERE email = %s", (user_id,))
+#         else:
+#             cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (user_id,))
         
-        user = cur.fetchone()
+#         user = cur.fetchone()
         
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
+#         if not user:
+#             raise HTTPException(status_code=401, detail="User not found")
         
-        return user
-    except ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid authentication token")
-    finally:
-        if 'cur' in locals():
-            cur.close()
-        if 'conn' in locals():
-            conn.close()
+#         return user
+#     except ExpiredSignatureError:
+#         raise HTTPException(status_code=401, detail="Token has expired")
+#     except JWTError:
+#         raise HTTPException(status_code=401, detail="Invalid authentication token")
+#     finally:
+#         if 'cur' in locals():
+#             cur.close()
+#         if 'conn' in locals():
+#             conn.close()
 
 def generate_matrimony_id():
     conn = psycopg2.connect(**settings.DB_CONFIG)
@@ -3452,6 +3452,16 @@ async def report_deactivation(
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Get the authenticated user's matrimony_id from the token
+        auth_matrimony_id = current_user.get("matrimony_id")
+        
+        # Verify the user is trying to deactivate their own profile
+        if str(auth_matrimony_id) != str(request.matrimony_id):
+            raise HTTPException(
+                status_code=403,
+                detail="You can only deactivate your own profile"
+            )
+
 
         # Check if report already exists
         cur.execute("""
@@ -3512,32 +3522,41 @@ async def report_deactivation(
             conn.close()
 
 @app.get("/matrimony/admin/deactivate-report")
-async def get_deactivation_reports(current_user: Dict[str, Any] = Depends(get_current_user_matrimony)):
-    if current_user.get("user_type") != "admin":
+async def get_deactivation_reports(
+    current_user: Dict = Depends(get_current_user_matrimony)
+):
+    # Strict admin check
+    if current_user["user_type"] != "admin":
         raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
 
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Get all reports
         cur.execute("""
-            SELECT * FROM deactivation_reports ORDER BY created_at DESC;
+            SELECT 
+                dr.*,
+                mp.full_name
+            FROM deactivation_reports dr
+            LEFT JOIN matrimony_profiles mp ON dr.matrimony_id = mp.matrimony_id
+            ORDER BY dr.timestamp DESC
         """)
         reports = cur.fetchall()
 
         return {
             "status": "success",
+            "count": len(reports),
             "reports": reports
         }
 
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+    
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
 
 # Points mechanism for recharge/ spend
 @app.post("/wallet/recharge")
@@ -4117,6 +4136,31 @@ async def admin_to_user_chat(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+@app.get("/matrimony/chat/admin/all-messages")
+async def get_all_user_chats(current_user: dict = Depends(get_current_user_matrimony)):
+    if current_user["user_type"] != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            SELECT * FROM matrimony_chats
+            WHERE sender_id != 'admin' OR receiver_id != 'admin'
+            ORDER BY timestamp ASC
+        """)
+        chats = cur.fetchall()
+
+        return {"status": "success", "messages": chats}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @app.get("/matrimony/chat/admin/messages", response_model=List[AdminChatMessage])
 async def get_user_chat_as_admin(
