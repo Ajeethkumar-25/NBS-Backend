@@ -755,7 +755,7 @@ def generate_matrimony_id():
 # Helper functions to save files
 # Allowed file types and max file size
 ALLOWED_FILE_TYPES = {
-    "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"
+    "image/jpg", "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"
 }
 MAX_FILE_SIZE = 1000 * 1024 * 1024  # 1000 MB
 
@@ -1986,7 +1986,7 @@ async def user_get_all_selected_files(user_id: int = Query(...)):
     cur = conn.cursor()
 
     try:
-        # Step 1: Fetch file IDs and categories
+        # Step 1: Fetch private file records
         cur.execute("""
             SELECT private_files_id, category FROM private_files
             WHERE uploaded_by = %s
@@ -1996,27 +1996,39 @@ async def user_get_all_selected_files(user_id: int = Query(...)):
         all_files_result = []
 
         for private_files_id, category in private_files:
-            # Step 2: Fetch file URLs
+            # Step 2: Fetch associated URLs and selection status
             cur.execute("""
                 SELECT id, file_url, user_selected_files FROM private_files_url
                 WHERE private_files_id = %s
             """, (private_files_id,))
             all_files = cur.fetchall()
 
-            updated_result = [
-                {
-                    "file_id": row[0],
-                    "file_url": row[1],
-                    "selected_status": row[2] if isinstance(row[2], dict) else (json.loads(row[2]) if row[2] else {})
+            selected_files = []
+            unselected_files = []
+
+            for row in all_files:
+                file_id, file_url, user_selected = row
+                parsed_selection = {}
+                if isinstance(user_selected, dict):
+                    parsed_selection = user_selected
+
+
+                file_data = {
+                    "file_id": file_id,
+                    "file_url": file_url
                 }
-                for row in all_files
-            ]
+
+                if parsed_selection.get("selected") is False:
+                    selected_files.append(file_data)
+                else:
+                    unselected_files.append(file_data)
 
             all_files_result.append({
                 "category": category,
                 "private_files_id": private_files_id,
                 "uploaded_by": user_id,
-                "selected_files": updated_result
+                "selected_files": selected_files,
+                "unselected_files": unselected_files
             })
 
         return {
@@ -2031,6 +2043,71 @@ async def user_get_all_selected_files(user_id: int = Query(...)):
     finally:
         cur.close()
         conn.close()
+
+@app.get("/photostudio/admin/private/unselected-files", response_model=Dict[str, Any])
+async def admin_get_unselected_files(user_id: int, current_user: dict = Depends(get_current_user)):
+    print("current_user:", current_user)
+    # Check if current user is admin
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # Join private_files and private_files_url, filter by user_id and unselected files
+        cur.execute("""
+            SELECT 
+                pf.private_files_id,
+                pf.category,
+                pf.uploaded_by,
+                pfu.id AS file_id,
+                pfu.file_url,
+                pfu.user_selected_files
+            FROM private_files pf
+            JOIN private_files_url pfu ON pf.private_files_id = pfu.private_files_id
+            WHERE pf.uploaded_by = %s
+              AND (
+                  pfu.user_selected_files IS NULL
+                  OR (pfu.user_selected_files::json ->> 'selected')::boolean = false
+              )
+        """, (user_id,))
+
+        rows = cur.fetchall()
+
+        result = [
+            {
+                "private_files_id": row["private_files_id"],
+                "category": row["category"],
+                "uploaded_by": row["uploaded_by"],
+                "file_id": row["file_id"],
+                "file_url": row["file_url"],
+                "selected_status": (
+                    row["user_selected_files"]
+                    if isinstance(row["user_selected_files"], dict)
+                    else json.loads(row["user_selected_files"]) if row["user_selected_files"]
+                    else {"selected": False}
+                )
+
+            }
+            for row in rows
+        ]
+
+        return {
+            "uploaded_by": user_id,
+            "unselected_files": result,
+            "total_unselected": len(result)
+        }
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Error fetching unselected files: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch unselected files")
+
+    finally:
+        cur.close()
+        conn.close()
+
         
 # Admin-product_frame
 @app.post("/photostudio/admin/product_frame", response_model=Dict[str, Any])
