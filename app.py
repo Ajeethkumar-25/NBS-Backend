@@ -4114,6 +4114,7 @@ async def admin_to_user_chat(
 
         receiver_id = user_result[0]
 
+
         # Insert message
         cur.execute("""
             INSERT INTO matrimony_chats (sender_id, receiver_id, message) 
@@ -4128,9 +4129,13 @@ async def admin_to_user_chat(
             "receiver_id": receiver_id
         }
 
+    except HTTPException as http_exc:
+        raise http_exc  
+
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
 
     finally:
         if 'cur' in locals(): cur.close()
