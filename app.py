@@ -2033,11 +2033,11 @@ async def user_get_all_selected_files(user_id: int = Query(...)):
         conn.close()
 
 @app.get("/photostudio/admin/private/unselected-files", response_model=Dict[str, Any])
-async def admin_get_unselected_files(user_id: int, current_user: dict = Depends(get_current_user)):
-    print("current_user:", current_user)
-    # Check if current user is admin
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
+async def admin_get_unselected_files(user_id: int):
+    # print("current_user:", current_user)
+    # # Check if current user is admin
+    # if current_user.get("user_type") != "admin":
+    #     raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
 
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
