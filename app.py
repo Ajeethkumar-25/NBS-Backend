@@ -1986,7 +1986,7 @@ async def user_get_all_selected_files(user_id: int = Query(...)):
     cur = conn.cursor()
 
     try:
-        # Step 1: Fetch private file records
+        # Step 1: Fetch file IDs and categories
         cur.execute("""
             SELECT private_files_id, category FROM private_files
             WHERE uploaded_by = %s
@@ -1996,39 +1996,27 @@ async def user_get_all_selected_files(user_id: int = Query(...)):
         all_files_result = []
 
         for private_files_id, category in private_files:
-            # Step 2: Fetch associated URLs and selection status
+            # Step 2: Fetch file URLs
             cur.execute("""
                 SELECT id, file_url, user_selected_files FROM private_files_url
                 WHERE private_files_id = %s
             """, (private_files_id,))
             all_files = cur.fetchall()
 
-            selected_files = []
-            unselected_files = []
-
-            for row in all_files:
-                file_id, file_url, user_selected = row
-                parsed_selection = {}
-                if isinstance(user_selected, dict):
-                    parsed_selection = user_selected
-
-
-                file_data = {
-                    "file_id": file_id,
-                    "file_url": file_url
+            updated_result = [
+                {
+                    "file_id": row[0],
+                    "file_url": row[1],
+                    "selected_status": row[2] if isinstance(row[2], dict) else (json.loads(row[2]) if row[2] else {})
                 }
-
-                if parsed_selection.get("selected") is False:
-                    selected_files.append(file_data)
-                else:
-                    unselected_files.append(file_data)
+                for row in all_files
+            ]
 
             all_files_result.append({
                 "category": category,
                 "private_files_id": private_files_id,
                 "uploaded_by": user_id,
-                "selected_files": selected_files,
-                "unselected_files": unselected_files
+                "selected_files": updated_result
             })
 
         return {
