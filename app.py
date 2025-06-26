@@ -4239,8 +4239,8 @@ async def get_user_chat_as_admin(
 ):
     try:
         # Ensure the user is an admin
-        if current_user["user_type"] != "admin":
-            raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
+        if current_user["user_type"] not in  ["admin", "user"]:
+            raise HTTPException(status_code=403, detail="Only admins or users can access this endpoint")
 
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
