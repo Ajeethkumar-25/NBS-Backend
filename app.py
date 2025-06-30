@@ -307,7 +307,7 @@ class MatrimonyToken(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str
-
+    matrimony_id: str
 
 class MatrimonyProfileResponse(BaseModel):
     matrimony_id: str
@@ -2491,6 +2491,7 @@ async def login_matrimony(request: MatrimonyLoginRequest):
             access_token=access_token,
             refresh_token=refresh_token,
             token_type="bearer",
+            matrimony_id=request.matrimony_id
         )
 
     except psycopg2.Error as e:
