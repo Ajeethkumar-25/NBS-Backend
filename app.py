@@ -425,6 +425,11 @@ class ChatRequest(BaseModel):
     sender_id: str
     receiver_id: str
 
+class ChatUserRequest(BaseModel):
+    message: str
+    sender_id: str
+    receiver_email: str
+
 class AdminChatMessage(BaseModel):
     sender_id: str
     receiver_id: str
@@ -4122,7 +4127,7 @@ async def forgot_password(request: ForgotPasswordRequest):
 
 @app.post("/matrimony/chat/user-to-admin")
 async def user_to_admin_chat(
-    request: ChatRequest,
+    request: ChatUserRequest,
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     try:
