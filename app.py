@@ -4233,18 +4233,36 @@ async def get_all_user_chats(current_user: dict = Depends(get_current_user_matri
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+from typing import Optional
+
 @app.get("/matrimony/chat/admin/messages", response_model=List[AdminChatMessage])
-async def get_user_chat_as_admin(
-    matrimony_id: str = Query(...),
+async def get_chat_messages(
+    matrimony_id: Optional[str] = Query(None),
+    user_email: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     try:
-        # Ensure the user is an admin
-        if current_user["user_type"] not in  ["admin", "user"]:
-            raise HTTPException(status_code=403, detail="Only admins or users can access this endpoint")
-
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Case 1: User - use their own matrimony_id
+        if current_user["user_type"] == "user":
+            matrimony_id = current_user["matrimony_id"]
+
+        # Case 2: Admin - look up matrimony_id by user_email if provided
+        elif current_user["user_type"] == "admin":
+            if not matrimony_id:
+                if not user_email:
+                    raise HTTPException(status_code=400, detail="Provide either matrimony_id or user_email")
+
+                cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s", (user_email,))
+                user = cur.fetchone()
+                if not user:
+                    raise HTTPException(status_code=404, detail="User not found")
+                matrimony_id = user["matrimony_id"]
+
+        else:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
 
         # Fetch all messages between the user and admin
         cur.execute("""
@@ -4265,6 +4283,7 @@ async def get_user_chat_as_admin(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
+
 
 # Run the application
 if __name__ == "__main__":
