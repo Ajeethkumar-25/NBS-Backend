@@ -441,7 +441,8 @@ class ReportSchema(BaseModel):
     reason: str
 
 class BlockUserSchema(BaseModel):
-    reported_matrimony_id: str
+    matrimony_id: str
+    reason: str
 
 # Full Rashi compatibility data
 RASHI_COMPATIBILITY = {
@@ -702,38 +703,38 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
     except PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     
-# def get_current_user_matrimony(token: str) -> Dict[str, Any]:
-#     try:
-#         payload = jwt.decode(token, "your_secret_key", algorithms=["HS256"])
-#         user_id = payload.get("sub")
-#         user_type = payload.get("user_type")
+def get_current_user_matrimony(token: str) -> Dict[str, Any]:
+    try:
+        payload = jwt.decode(token, "your_secret_key", algorithms=["HS256"])
+        user_id = payload.get("sub")
+        user_type = payload.get("user_type")
         
-#         if not user_id or not user_type:
-#             raise HTTPException(status_code=401, detail="Invalid authentication token")
+        if not user_id or not user_type:
+            raise HTTPException(status_code=401, detail="Invalid authentication token")
         
-#         conn = get_db_connection()
-#         cur = conn.cursor(cursor_factory=DictCursor)
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=DictCursor)
         
-#         if user_type == "admin":
-#             cur.execute("SELECT id, email, user_type FROM users WHERE email = %s", (user_id,))
-#         else:
-#             cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (user_id,))
+        if user_type == "admin":
+            cur.execute("SELECT id, email, user_type FROM users WHERE email = %s", (user_id,))
+        else:
+            cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (user_id,))
         
-#         user = cur.fetchone()
+        user = cur.fetchone()
         
-#         if not user:
-#             raise HTTPException(status_code=401, detail="User not found")
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
         
-#         return user
-#     except ExpiredSignatureError:
-#         raise HTTPException(status_code=401, detail="Token has expired")
-#     except JWTError:
-#         raise HTTPException(status_code=401, detail="Invalid authentication token")
-#     finally:
-#         if 'cur' in locals():
-#             cur.close()
-#         if 'conn' in locals():
-#             conn.close()
+        return user
+    except ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
 
 def generate_matrimony_id():
     conn = psycopg2.connect(**settings.DB_CONFIG)
@@ -4335,48 +4336,70 @@ async def get_reported_profiles(current_user: dict = Depends(get_current_user_ma
     return data
 
 @app.post("/matrimony/admin/block-user")
-async def block_user(reported: BlockUserSchema, current_user: dict = Depends(get_current_user_matrimony)):
-    if current_user.get("user_type") != "admin":
+async def block_user(
+    request: BlockUserSchema,
+    current_user: dict = Depends(get_current_user_matrimony)
+):
+    if current_user["user_type"] != "admin":
         raise HTTPException(status_code=403, detail="Only admin can block users")
-
-    email = current_user.get("sub")
-    if not email:
-        raise HTTPException(status_code=400, detail="Admin email not found in token")
 
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        # 🔍 Get user's matrimony_id using email
-        cur.execute("""
-            SELECT matrimony_id FROM matrimony_profiles WHERE email = %s
-        """, (email,))
+        # Fetch admin's matrimony_id if not present in current_user
+        cur.execute("SELECT email FROM users WHERE email = %s", (current_user["email"],))
         result = cur.fetchone()
-
         if not result:
-            raise HTTPException(status_code=404, detail="Admin matrimony_id not found in DB")
-
+            raise HTTPException(status_code=404, detail="Admin not found")
         admin_matrimony_id = result[0]
 
-        # ✅ Block the reported user
+        # Optional: Check if already blocked
         cur.execute("""
-            INSERT INTO blocked_users (matrimony_id, blocked_by_admin_id)
-            VALUES (%s, %s)
-            ON CONFLICT (matrimony_id) DO NOTHING
-        """, (reported.reported_matrimony_id, admin_matrimony_id))
+            SELECT 1 FROM blocked_users WHERE blocked_matrimony_id = %s
+        """, (request.matrimony_id,))
+        if cur.fetchone():
+            raise HTTPException(status_code=400, detail="User already blocked")
 
+        # Insert block record
+        cur.execute("""
+            INSERT INTO blocked_users (blocked_matrimony_id, admin_matrimony_id, reason)
+            VALUES (%s, %s, %s)
+        """, (request.matrimony_id, admin_matrimony_id, request.reason))
         conn.commit()
-        return {"message": f"User {reported.reported_matrimony_id} blocked by {admin_matrimony_id}"}
 
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        return {
+        "message": "User blocked successfully",
+        "blocked_matrimony_id": request.matrimony_id
+    }
 
     finally:
         cur.close()
         conn.close()
 
-    
+@app.get("/matrimony/admin/blocked-users")
+async def get_blocked_users(current_user: dict = Depends(get_current_user_matrimony)):
+    if current_user["user_type"] != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            SELECT blocked_matrimony_id, admin_matrimony_id, reason, blocked_at
+            FROM blocked_users
+            ORDER BY blocked_at DESC
+        """)
+        blocked_users = cur.fetchall()
+
+        return {"blocked_users": blocked_users}
+
+    finally:
+        cur.close()
+        conn.close()
+
+
 # Run the application
 if __name__ == "__main__":
     import uvicorn
