@@ -423,13 +423,20 @@ class DeactivationReportRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     sender_id: str
-    receiver_email: EmailStr
+    receiver_id: str
 
 class AdminChatMessage(BaseModel):
     sender_id: str
     receiver_id: str
     message: str
     timestamp: datetime  
+
+class ReportSchema(BaseModel):
+    reported_matrimony_id: str
+    reason: str
+
+class BlockUserSchema(BaseModel):
+    reported_matrimony_id: str
 
 # Full Rashi compatibility data
 RASHI_COMPATIBILITY = {
@@ -4167,13 +4174,13 @@ async def admin_to_user_chat(
             raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
 
         sender_id = "admin"
-        user_email = request.receiver_email
+        user_id = request.receiver_id
 
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
         # Resolve user's matrimony_id
-        cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE email = %s AND user_type = 'user'", (user_email,))
+        cur.execute("SELECT matrimony_id FROM matrimony_profiles WHERE matrimony_id = %s AND user_type = 'user'", (request.receiver_id,))
         user_result = cur.fetchone()
         if not user_result:
             raise HTTPException(status_code=404, detail="User not found with provided email")
@@ -4233,8 +4240,6 @@ async def get_all_user_chats(current_user: dict = Depends(get_current_user_matri
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-from typing import Optional
-
 @app.get("/matrimony/chat/admin/messages", response_model=List[AdminChatMessage])
 async def get_chat_messages(
     matrimony_id: Optional[str] = Query(None),
@@ -4266,8 +4271,7 @@ async def get_chat_messages(
 
         # Fetch all messages between the user and admin
         cur.execute("""
-            SELECT sender_id, receiver_id, message, timestamp
-            FROM matrimony_chats
+            SELECT * FROM matrimony_chats
             WHERE (sender_id = %s AND receiver_id = 'admin')
                OR (sender_id = 'admin' AND receiver_id = %s)
             ORDER BY timestamp ASC
@@ -4284,7 +4288,90 @@ async def get_chat_messages(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+# Blocking Users Mechanism from Admin --> reporters are User , Admin can see the reported-profiles and Blocking 
+@app.post("/matrimony/user/report")
+async def report_user(report: ReportSchema, current_user: dict = Depends(get_current_user_matrimony)):
 
+    conn = psycopg2.connect(**settings.DB_CONFIG)
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO user_reports (reporter_matrimony_id, reported_matrimony_id, reason)
+        VALUES (%s, %s, %s)
+    """, (current_user["matrimony_id"], report.reported_matrimony_id, report.reason))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"message": "User reported successfully"}
+
+
+@app.get("/matrimony/admin/reported-profiles")
+async def get_reported_profiles(current_user: dict = Depends(get_current_user_matrimony)):
+    if current_user["user_type"] != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
+
+    conn = psycopg2.connect(**settings.DB_CONFIG)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT 
+            reported_matrimony_id,
+            COUNT(*) AS total_reports,
+            array_agg(reason) AS reasons,
+            array_agg(reporter_matrimony_id) AS reporters
+        FROM user_reports
+        GROUP BY reported_matrimony_id
+        ORDER BY total_reports DESC
+    """)
+    
+    data = cur.fetchall()
+    cur.close()
+    conn.close()
+    return data
+
+@app.post("/matrimony/admin/block-user")
+async def block_user(reported: BlockUserSchema, current_user: dict = Depends(get_current_user_matrimony)):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can block users")
+
+    email = current_user.get("sub")
+    if not email:
+        raise HTTPException(status_code=400, detail="Admin email not found in token")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        # 🔍 Get user's matrimony_id using email
+        cur.execute("""
+            SELECT matrimony_id FROM matrimony_profiles WHERE email = %s
+        """, (email,))
+        result = cur.fetchone()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="Admin matrimony_id not found in DB")
+
+        admin_matrimony_id = result[0]
+
+        # ✅ Block the reported user
+        cur.execute("""
+            INSERT INTO blocked_users (matrimony_id, blocked_by_admin_id)
+            VALUES (%s, %s)
+            ON CONFLICT (matrimony_id) DO NOTHING
+        """, (reported.reported_matrimony_id, admin_matrimony_id))
+
+        conn.commit()
+        return {"message": f"User {reported.reported_matrimony_id} blocked by {admin_matrimony_id}"}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    finally:
+        cur.close()
+        conn.close()
+
+    
 # Run the application
 if __name__ == "__main__":
     import uvicorn
