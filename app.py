@@ -4438,7 +4438,7 @@ async def block_user(
         cur.execute("""
             INSERT INTO blocked_users (blocked_matrimony_id, admin_matrimony_id, reason, is_blocked)
             VALUES (%s, %s, %s, %s)
-        """, (request.matrimony_id, admin_matrimony_id, request.reason, ))
+        """, (request.matrimony_id, admin_matrimony_id, request.reason, True))
         conn.commit()
 
         return {
