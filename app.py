@@ -172,9 +172,12 @@ def is_user_blocked(matrimony_id: str) -> bool:
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT 1 FROM blocked_users WHERE blocked_matrimony_id = %s
+            SELECT 1 FROM blocked_users WHERE blocked_matrimony_id = %s AND is_blocked = true 
         """, (matrimony_id,))
         return cur.fetchone() is not None
+    except Exception as e:
+        logger.error(f"Error checking if user is blocked: {e}")
+        return False
     finally:
         cur.close()
         conn.close()
@@ -2686,7 +2689,7 @@ async def get_matrimony_profiles(
             AND matrimony_id NOT IN (
                 SELECT blocked_matrimony_id 
                 FROM blocked_users 
-                WHERE admin_matrimony_id = %s AND is_blocked = true
+                WHERE admin_matrimony_id = %s AND is_blocked = %s
             )
         """
         params = [current_user["matrimony_id"]]
@@ -2706,12 +2709,27 @@ async def get_matrimony_profiles(
         profiles = cur.fetchall()
         logger.info(f"Fetched profiles count: {len(profiles)}")
 
+        # Fetch blocked users if admin
+        blocked_users = []
+        if current_user["user_type"].lower() == "admin":
+            try:
+                cur.execute("""
+                    SELECT blocked_matrimony_id, admin_matrimony_id, reason, created_at AS blocked_at
+                    FROM blocked_users
+                    WHERE admin_matrimony_id = %s AND is_blocked = true
+                    ORDER BY created_at DESC
+                """, (current_user["matrimony_id"],))
+                blocked_users = [dict(row) for row in cur.fetchall()]
+                logger.info(f"Blocked users count: {len(blocked_users)}")
+            except Exception as e:
+                logger.error(f"Failed to fetch blocked users: {e}")
+
         if not profiles:
             if current_user["user_type"].lower() == "admin":
-                return {"Profiles": []}
+                return {"Profiles": [], "blocked_users": blocked_users}
             return {"New Profiles": [], "Default Profiles": []}
 
-        # Setup translator if needed
+        # Setup translator
         translator = None
         if language and language.lower() != "en":
             try:
@@ -2727,8 +2745,7 @@ async def get_matrimony_profiles(
             if url and isinstance(url, str):
                 if url.startswith("http"):
                     return url
-                else:
-                    return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+                return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
             return None
 
         def process_s3_urls(value, folder_name):
@@ -2739,8 +2756,6 @@ async def get_matrimony_profiles(
             elif isinstance(value, list):
                 items = value
             else:
-                return None
-            if not items:
                 return None
             return [
                 item if item.startswith("http") else
@@ -2783,7 +2798,7 @@ async def get_matrimony_profiles(
 
             if translator and language.lower() != "en":
                 translatable_fields = [
-                    "full_name", "occupation", "gender", "education", "mother_tongue", "dhosham", 
+                    "full_name", "occupation", "gender", "education", "mother_tongue", "dhosham",
                     "work_type", "company", "work_location", "religion", "caste", "sub_caste"
                 ]
                 for field in translatable_fields:
@@ -2815,10 +2830,13 @@ async def get_matrimony_profiles(
                 logger.error(f"Validation error for {profile_dict.get('matrimony_id')}: {e}")
                 continue
 
-        # Return based on user type
+        # Final return
         if current_user["user_type"].lower() == "admin":
             logger.info(f"Admin view: Returning all profiles (count: {len(all_profiles)})")
-            return {"Profiles": all_profiles}
+            return {
+                "Profiles": all_profiles,
+                "blocked_users": blocked_users
+            }
         else:
             logger.info(f"User view: Returning {len(new_profiles)} new and {len(default_profiles)} default profiles")
             return {
@@ -2832,6 +2850,7 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
+
 
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
