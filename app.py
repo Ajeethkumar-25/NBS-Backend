@@ -96,7 +96,7 @@ app.mount("/static/horoscopes", StaticFiles(directory=horoscopes_dir), name="sta
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://admin.newbrindha.com", "https://newbrindha.com"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://admin.newbrindha.com", "https://newbrindha.com","http://newbrindha.com", "http://admin.newbrindha.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2670,8 +2670,8 @@ async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     language: Optional[str] = Query("en", description="Language for response (e.g., 'en', 'ta')")
 ):
-    # if is_user_blocked(current_user.get("matrimony_id")):
-    #     raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
+    if is_user_blocked(current_user.get("matrimony_id")):
+        raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
 
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -2680,10 +2680,17 @@ async def get_matrimony_profiles(
         logger.info(f"Current user: {current_user}")
         logger.info(f"Requested language: {language}")
 
-        query = "SELECT * FROM matrimony_profiles WHERE is_active = true"
-        params = []
+        query = """
+            SELECT * FROM matrimony_profiles
+            WHERE is_active = true
+            AND matrimony_id NOT IN (
+                SELECT blocked_matrimony_id 
+                FROM blocked_users 
+                WHERE admin_matrimony_id = %s AND is_blocked = true
+            )
+        """
+        params = [current_user["matrimony_id"]]
 
-        # Apply gender-based filter for non-admin users
         if current_user["user_type"].lower() != "admin":
             user_gender = current_user.get("gender")
             if not user_gender:
@@ -2693,7 +2700,7 @@ async def get_matrimony_profiles(
             params.append(opposite_gender)
             logger.info(f"Filtering opposite gender: {opposite_gender}")
         else:
-            logger.info("Admin user detected - fetching all profiles")
+            logger.info("Admin user detected - fetching all profiles excluding blocked ones")
 
         cur.execute(query, params)
         profiles = cur.fetchall()
