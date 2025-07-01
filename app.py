@@ -4363,21 +4363,49 @@ async def get_reported_profiles(current_user: dict = Depends(get_current_user_ma
     conn = psycopg2.connect(**settings.DB_CONFIG)
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    cur.execute("""
-        SELECT 
-            reported_matrimony_id,
-            COUNT(*) AS total_reports,
-            array_agg(reason) AS reasons,
-            array_agg(reporter_matrimony_id) AS reporters
-        FROM user_reports
-        GROUP BY reported_matrimony_id
-        ORDER BY total_reports DESC
-    """)
-    
-    data = cur.fetchall()
-    cur.close()
-    conn.close()
-    return data
+    try:
+        # Step 1: Get admin's matrimony_id from users table
+        cur.execute("SELECT email FROM users WHERE email = %s", (current_user["email"],))
+        admin_result = cur.fetchone()
+        if not admin_result:
+            raise HTTPException(status_code=404, detail="Admin not found")
+        admin_matrimony_id = admin_result["email"]
+
+        # Step 2: Fetch all reported profiles and their details
+        cur.execute("""
+            SELECT 
+                ur.reported_matrimony_id,
+                COUNT(*) AS total_reports,
+                ARRAY_AGG(ur.reason) AS reasons,
+                ARRAY_AGG(ur.reporter_matrimony_id) AS reporters
+            FROM user_reports ur
+            GROUP BY ur.reported_matrimony_id
+            ORDER BY total_reports DESC
+        """)
+        reported_profiles = cur.fetchall()
+
+        # Step 3: Fetch all blocked matrimony_ids by this admin
+        cur.execute("""
+            SELECT blocked_matrimony_id 
+            FROM blocked_users 
+            WHERE admin_matrimony_id = %s
+        """, (admin_matrimony_id,))
+        blocked = cur.fetchall()
+        blocked_ids = {row['blocked_matrimony_id'] for row in blocked}
+
+        # Step 4: Annotate each report with is_blocked status
+        for profile in reported_profiles:
+            profile["is_blocked"] = profile["reported_matrimony_id"] in blocked_ids
+
+        return reported_profiles
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get reported profiles: {str(e)}")
+
+    finally:
+        cur.close()
+        conn.close()
+
 
 @app.post("/matrimony/admin/block-user")
 async def block_user(
@@ -4408,9 +4436,9 @@ async def block_user(
 
         # Insert block record
         cur.execute("""
-            INSERT INTO blocked_users (blocked_matrimony_id, admin_matrimony_id, reason)
-            VALUES (%s, %s, %s)
-        """, (request.matrimony_id, admin_matrimony_id, request.reason))
+            INSERT INTO blocked_users (blocked_matrimony_id, admin_matrimony_id, reason, is_blocked)
+            VALUES (%s, %s, %s, %s)
+        """, (request.matrimony_id, admin_matrimony_id, request.reason, ))
         conn.commit()
 
         return {
