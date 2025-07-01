@@ -166,6 +166,20 @@ def get_db_connection():
             detail=f"Database connection error: {str(e)}"
         )
 
+# is_user_blocked
+def is_user_blocked(matrimony_id: str) -> bool:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT 1 FROM blocked_users WHERE blocked_matrimony_id = %s
+        """, (matrimony_id,))
+        return cur.fetchone() is not None
+    finally:
+        cur.close()
+        conn.close()
+
+
 # Models
 
 class UserCreate(BaseModel):
@@ -443,6 +457,9 @@ class ReportSchema(BaseModel):
 class BlockUserSchema(BaseModel):
     matrimony_id: str
     reason: str
+
+class UnblockUserSchema(BaseModel):
+    matrimony_id: str
 
 # Full Rashi compatibility data
 RASHI_COMPATIBILITY = {
@@ -2653,6 +2670,9 @@ async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     language: Optional[str] = Query("en", description="Language for response (e.g., 'en', 'ta')")
 ):
+    # if is_user_blocked(current_user.get("matrimony_id")):
+    #     raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
+
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
@@ -2811,6 +2831,9 @@ async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
 ):
+    if is_user_blocked(current_user.get("matrimony_id")):
+        raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
+
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
@@ -2856,10 +2879,15 @@ async def get_matrimony_preferences(
         query = """
             SELECT * FROM matrimony_profiles
             WHERE gender ILIKE %s
-              AND matrimony_id != %s
-              AND is_active = TRUE
+            AND matrimony_id != %s
+            AND is_active = TRUE
+            AND matrimony_id NOT IN (
+                SELECT blocked_matrimony_id 
+                FROM blocked_users 
+                WHERE admin_matrimony_id = %s
+            )
         """
-        params = [opposite_gender, user_profile['matrimony_id']]
+        params = [opposite_gender, user_profile['matrimony_id'], current_user['matrimony_id']]
 
         if user_profile['preferred_rashi']:
             preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
@@ -2878,7 +2906,6 @@ async def get_matrimony_preferences(
         compatible_profiles = []
         for profile in profiles:
             profile_dict = dict(profile)
-
             profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
@@ -2898,18 +2925,22 @@ async def get_matrimony_preferences(
 
         return compatible_profiles
 
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
 
     finally:
         cur.close()
         conn.close()
 
+
 @app.get("/matrimony/location-preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
 ):
+    if is_user_blocked(current_user.get("matrimony_id")):
+        raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
+
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
@@ -2961,8 +2992,13 @@ async def get_matrimony_preferences(
               AND TRIM(work_location) != ''
               AND LOWER(TRIM(work_location)) != 'null'
               AND is_active = TRUE
+                AND matrimony_id NOT IN (
+                  SELECT blocked_matrimony_id 
+                  FROM blocked_users 
+                  WHERE admin_matrimony_id = %s
+              )
         """
-        params = [opposite_gender, user_profile['matrimony_id']]
+        params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
 
         # Apply location preference filtering
         if user_profile['preferred_location']:
@@ -3017,6 +3053,9 @@ async def get_matrimony_caste_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
 ):
+    if is_user_blocked(current_user.get("matrimony_id")):
+        raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
+
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
@@ -3067,8 +3106,13 @@ async def get_matrimony_caste_preferences(
               AND TRIM(caste) != ''
               AND LOWER(TRIM(caste)) != 'null'
               AND is_active = TRUE
+              AND matrimony_id NOT IN (
+                  SELECT blocked_matrimony_id 
+                  FROM blocked_users 
+                  WHERE admin_matrimony_id = %s
+              )
         """
-        params = [opposite_gender, user_profile['matrimony_id']]
+        params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
 
         # Apply caste preference filtering
         if user_profile['caste']:
@@ -3116,31 +3160,31 @@ async def get_matrimony_caste_preferences(
 
 
 
-@app.get("/rashi_compatibility/{rashi1}/{rashi2}")
-def get_rashi_compatibility(rashi1: str, rashi2: str):
-    rashi1, rashi2 = rashi1.lower(), rashi2.lower()
-    compatibility = RASHI_COMPATIBILITY.get((rashi1, rashi2)) or RASHI_COMPATIBILITY.get((rashi2, rashi1))
-    return {"rashi1": rashi1, "rashi2": rashi2, "compatibility": compatibility or "Unknown"}
+# @app.get("/rashi_compatibility/{rashi1}/{rashi2}")
+# def get_rashi_compatibility(rashi1: str, rashi2: str):
+#     rashi1, rashi2 = rashi1.lower(), rashi2.lower()
+#     compatibility = RASHI_COMPATIBILITY.get((rashi1, rashi2)) or RASHI_COMPATIBILITY.get((rashi2, rashi1))
+#     return {"rashi1": rashi1, "rashi2": rashi2, "compatibility": compatibility or "Unknown"}
 
-@app.get("/nakshatra_compatibility/{nakshatra1}/{nakshatra2}")
-def get_nakshatra_compatibility(nakshatra1: str, nakshatra2: str):
-    nakshatra1, nakshatra2 = nakshatra1.lower(), nakshatra2.lower()
-    compatibility = NAKSHATRA_COMPATIBILITY.get((nakshatra1, nakshatra2)) or NAKSHATRA_COMPATIBILITY.get((nakshatra2, nakshatra1))
-    return {"nakshatra1": nakshatra1, "nakshatra2": nakshatra2, "compatibility": compatibility or "Unknown"}
+# @app.get("/nakshatra_compatibility/{nakshatra1}/{nakshatra2}")
+# def get_nakshatra_compatibility(nakshatra1: str, nakshatra2: str):
+#     nakshatra1, nakshatra2 = nakshatra1.lower(), nakshatra2.lower()
+#     compatibility = NAKSHATRA_COMPATIBILITY.get((nakshatra1, nakshatra2)) or NAKSHATRA_COMPATIBILITY.get((nakshatra2, nakshatra1))
+#     return {"nakshatra1": nakshatra1, "nakshatra2": nakshatra2, "compatibility": compatibility or "Unknown"}
 
-@app.post("/check_compatibility/")
-def check_full_compatibility(request: CompatibilityRequest):
-    rashi_match = RASHI_COMPATIBILITY.get((request.groom_rashi.lower(), request.bride_rashi.lower()))
-    nakshatra_match = NAKSHATRA_COMPATIBILITY.get((request.groom_nakshatra.lower(), request.bride_nakshatra.lower()))
+# @app.post("/check_compatibility/")
+# def check_full_compatibility(request: CompatibilityRequest):
+#     rashi_match = RASHI_COMPATIBILITY.get((request.groom_rashi.lower(), request.bride_rashi.lower()))
+#     nakshatra_match = NAKSHATRA_COMPATIBILITY.get((request.groom_nakshatra.lower(), request.bride_nakshatra.lower()))
     
-    return {
-        "groom_rashi": request.groom_rashi,
-        "bride_rashi": request.bride_rashi,
-        "rashi_compatibility": rashi_match or "Unknown",
-        "groom_nakshatra": request.groom_nakshatra,
-        "bride_nakshatra": request.bride_nakshatra,
-        "nakshatra_compatibility": nakshatra_match or "Unknown"
-    }
+#     return {
+#         "groom_rashi": request.groom_rashi,
+#         "bride_rashi": request.bride_rashi,
+#         "rashi_compatibility": rashi_match or "Unknown",
+#         "groom_nakshatra": request.groom_nakshatra,
+#         "bride_nakshatra": request.bride_nakshatra,
+#         "nakshatra_compatibility": nakshatra_match or "Unknown"
+#     }
 
 @app.post("/send-notification", response_model=Dict[str, Any])
 async def send_notification(
@@ -4340,26 +4384,27 @@ async def block_user(
     request: BlockUserSchema,
     current_user: dict = Depends(get_current_user_matrimony)
 ):
-    if current_user["user_type"] != "admin":
+    if current_user.get("user_type") != "admin":
         raise HTTPException(status_code=403, detail="Only admin can block users")
 
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        # Fetch admin's matrimony_id if not present in current_user
+        # Fetch admin's matrimony_id
         cur.execute("SELECT email FROM users WHERE email = %s", (current_user["email"],))
         result = cur.fetchone()
         if not result:
             raise HTTPException(status_code=404, detail="Admin not found")
         admin_matrimony_id = result[0]
 
-        # Optional: Check if already blocked
+        # Check if the user is already blocked by this admin
         cur.execute("""
-            SELECT 1 FROM blocked_users WHERE blocked_matrimony_id = %s
-        """, (request.matrimony_id,))
+            SELECT 1 FROM blocked_users 
+            WHERE blocked_matrimony_id = %s AND admin_matrimony_id = %s
+        """, (request.matrimony_id, admin_matrimony_id))
         if cur.fetchone():
-            raise HTTPException(status_code=400, detail="User already blocked")
+            raise HTTPException(status_code=400, detail="User is already blocked by this admin")
 
         # Insert block record
         cur.execute("""
@@ -4369,9 +4414,10 @@ async def block_user(
         conn.commit()
 
         return {
-        "message": "User blocked successfully",
-        "blocked_matrimony_id": request.matrimony_id
-    }
+            "message": "User blocked successfully",
+            "blocked_matrimony_id": request.matrimony_id,
+            "admin_matrimony_id": admin_matrimony_id
+        }
 
     finally:
         cur.close()
@@ -4394,6 +4440,54 @@ async def get_blocked_users(current_user: dict = Depends(get_current_user_matrim
         blocked_users = cur.fetchall()
 
         return {"blocked_users": blocked_users}
+
+    finally:
+        cur.close()
+        conn.close()
+
+# Unblock-User 
+@app.post("/matrimony/admin/unblock-user")
+async def unblock_user(
+    request: UnblockUserSchema,
+    current_user: Dict = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can unblock users")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        # Fetch admin's matrimony_id from users table (same as block endpoint)
+        cur.execute("SELECT email FROM users WHERE email = %s", (current_user["email"],))
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Admin not found")
+        admin_matrimony_id = result[0]
+
+        # Check if the user is blocked
+        cur.execute("""
+            SELECT 1 FROM blocked_users 
+            WHERE blocked_matrimony_id = %s AND admin_matrimony_id = %s
+        """, (request.matrimony_id, admin_matrimony_id))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="User is not blocked by this admin")
+
+        # Delete the block record
+        cur.execute("""
+            DELETE FROM blocked_users 
+            WHERE blocked_matrimony_id = %s AND admin_matrimony_id = %s
+        """, (request.matrimony_id, admin_matrimony_id))
+        conn.commit()
+
+        return {
+            "message": "User unblocked successfully",
+            "unblocked_matrimony_id": request.matrimony_id,
+            "admin_matrimony_id": admin_matrimony_id
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to unblock user: {str(e)}")
 
     finally:
         cur.close()
