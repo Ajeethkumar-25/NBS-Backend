@@ -459,7 +459,7 @@ class BlockUserSchema(BaseModel):
     reason: str
 
 class UnblockUserSchema(BaseModel):
-    matrimony_id: str
+    matrimony_id: List[str]
 
 # Full Rashi compatibility data
 RASHI_COMPATIBILITY = {
@@ -2668,11 +2668,9 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
 @app.get("/matrimony/profiles", response_model=Dict[str, List[MatrimonyProfileResponse]])
 async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
-    language: Optional[str] = Query("en", description="Language for response (e.g., 'en', 'ta')")
-):
-    # if is_user_blocked(current_user.get("matrimony_id")):
-    #     raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
+    language: Optional[str] = Query("en", description="Language for response (e.g., 'en', 'ta')"),
 
+):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
@@ -2680,31 +2678,49 @@ async def get_matrimony_profiles(
         logger.info(f"Current user: {current_user}")
         logger.info(f"Requested language: {language}")
 
+        user_type = current_user["user_type"].lower()
         query = "SELECT * FROM matrimony_profiles WHERE is_active = true"
         params = []
 
-        # Apply gender-based filter for non-admin users
-        if current_user["user_type"].lower() != "admin":
+        if user_type != "admin":
+            # Users: show opposite gender and exclude globally blocked profiles
             user_gender = current_user.get("gender")
             if not user_gender:
                 raise HTTPException(status_code=400, detail="User gender not found")
             opposite_gender = "Female" if user_gender.lower() == "male" else "Male"
-            query += " AND gender ILIKE %s"
+
+            query += """
+                AND gender ILIKE %s
+                AND matrimony_id NOT IN (
+                    SELECT blocked_matrimony_id
+                    FROM blocked_users
+                    WHERE is_blocked = true
+                )
+            """
             params.append(opposite_gender)
-            logger.info(f"Filtering opposite gender: {opposite_gender}")
+
+            logger.info(f"User view - Filtering opposite gender: {opposite_gender} and excluding globally blocked profiles")
         else:
-            logger.info("Admin user detected - fetching all profiles")
+            # Admins: show all except profiles they blocked
+            admin_email = current_user["email"]
+            query += """
+                AND matrimony_id NOT IN (
+                    SELECT blocked_matrimony_id 
+                    FROM blocked_users 
+                    WHERE admin_matrimony_id = %s AND is_blocked = true
+                )
+            """
+            params.append(admin_email)
+            logger.info(f"Admin {admin_email} view - excluding profiles they blocked")
 
         cur.execute(query, params)
         profiles = cur.fetchall()
         logger.info(f"Fetched profiles count: {len(profiles)}")
 
         if not profiles:
-            if current_user["user_type"].lower() == "admin":
-                return {"Profiles": []}
-            return {"New Profiles": [], "Default Profiles": []}
+            return {"Profiles": []} if user_type == "admin" else {"New Profiles": [], "Default Profiles": []}
 
-        # Setup translator if needed
+        # Optional translation
         translator = None
         if language and language.lower() != "en":
             try:
@@ -2716,12 +2732,10 @@ async def get_matrimony_profiles(
                 logger.error(f"Translator failed to initialize: {e}")
                 translator = None
 
+        # S3 helpers
         def process_s3_url(url, folder_name):
             if url and isinstance(url, str):
-                if url.startswith("http"):
-                    return url
-                else:
-                    return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+                return url if url.startswith("http") else f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
             return None
 
         def process_s3_urls(value, folder_name):
@@ -2797,7 +2811,7 @@ async def get_matrimony_profiles(
                 profile_obj = MatrimonyProfileResponse(**profile_dict)
                 updated_at = profile.get("updated_at")
 
-                if current_user["user_type"].lower() == "admin":
+                if user_type == "admin":
                     all_profiles.append(profile_obj)
                 else:
                     if updated_at and isinstance(updated_at, datetime) and updated_at >= cutoff_date:
@@ -2806,18 +2820,13 @@ async def get_matrimony_profiles(
                         default_profiles.append(profile_obj)
             except ValidationError as e:
                 logger.error(f"Validation error for {profile_dict.get('matrimony_id')}: {e}")
+                logger.debug(f"Invalid profile data: {profile_dict}")
                 continue
 
-        # Return based on user type
-        if current_user["user_type"].lower() == "admin":
-            logger.info(f"Admin view: Returning all profiles (count: {len(all_profiles)})")
-            return {"Profiles": all_profiles}
-        else:
-            logger.info(f"User view: Returning {len(new_profiles)} new and {len(default_profiles)} default profiles")
-            return {
-                "New Profiles": new_profiles,
-                "Default Profiles": default_profiles
-            }
+        return {"Profiles": all_profiles} if user_type == "admin" else {
+            "New Profiles": new_profiles,
+            "Default Profiles": default_profiles
+        }
 
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
@@ -2825,6 +2834,7 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
+
 
 @app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
 async def get_matrimony_preferences(
@@ -4486,40 +4496,34 @@ async def unblock_user(
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        # Fetch admin's matrimony_id from users table (same as block endpoint)
+        # Get admin email (you could fetch matrimony_id too if needed)
         cur.execute("SELECT email FROM users WHERE email = %s", (current_user["email"],))
         result = cur.fetchone()
         if not result:
             raise HTTPException(status_code=404, detail="Admin not found")
         admin_matrimony_id = result[0]
 
-        # Check if the user is blocked
-        cur.execute("""
-            SELECT 1 FROM blocked_users 
-            WHERE blocked_matrimony_id = %s AND admin_matrimony_id = %s
-        """, (request.matrimony_id, admin_matrimony_id))
-        if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="User is not blocked by this admin")
-
-        # Delete the block record
+        # Delete all matching block records
         cur.execute("""
             DELETE FROM blocked_users 
-            WHERE blocked_matrimony_id = %s AND admin_matrimony_id = %s
+            WHERE blocked_matrimony_id = ANY(%s) AND admin_matrimony_id = %s
         """, (request.matrimony_id, admin_matrimony_id))
+
         conn.commit()
 
         return {
-            "message": "User unblocked successfully",
-            "unblocked_matrimony_id": request.matrimony_id,
+            "message": "User(s) unblocked successfully",
+            "unblocked_matrimony_ids": request.matrimony_id,
             "admin_matrimony_id": admin_matrimony_id
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to unblock user: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to unblock user(s): {str(e)}")
 
     finally:
         cur.close()
         conn.close()
+
 
 
 # Run the application
