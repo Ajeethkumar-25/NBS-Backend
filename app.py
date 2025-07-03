@@ -197,6 +197,7 @@ class Token(BaseModel):
     token_type: str
     email: str
     user_type: str
+    message: str
 
 class RefreshToken(BaseModel):
     refresh_token: str
@@ -1009,6 +1010,7 @@ async def login(user: UserLogin):
         conn.commit()
         
         return {
+            "message": "Login successful",
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
@@ -1049,7 +1051,7 @@ async def create_event_form(
         conn.commit()
         
         return {
-            "message": "Event form submitted successfully",
+            "message": f"{event.name},{event.event_date},{event.event_time},{event.event_type} Event form submitted successfully",
             "event_id": event_id
         }
     except Exception as e:
@@ -1062,8 +1064,7 @@ async def create_event_form(
 @app.get("/photostudio/admin/eventform", response_model=List[Dict[str, Any]])
 async def get_event_forms():
     """
-    Retrieve all event forms
-    :return: List of event forms
+    Retrieve all event forms with personalized success messages.
     """
     conn = get_db_connection()
     cur = conn.cursor()
@@ -1075,10 +1076,17 @@ async def get_event_forms():
             ORDER BY created_at DESC
         """)
         rows = cur.fetchall()
-
-        # Convert list of tuples to list of dicts
         columns = [desc[0] for desc in cur.description]
-        event_forms = [dict(zip(columns, row)) for row in rows]
+
+        event_forms = []
+        for row in rows:
+            event = dict(zip(columns, row))
+            # Add personalized message to each event
+            event["message"] = (
+                f"{event['name']}, {event['event_date']}, "
+                f"{event['event_time']}, {event['event_type']} Event form submitted successfully"
+            )
+            event_forms.append(event)
 
         return event_forms
     except Exception as e:
@@ -1086,6 +1094,7 @@ async def get_event_forms():
     finally:
         cur.close()
         conn.close()
+
 
 @app.post("/photostudio/refresh-token", response_model=Token)
 async def refresh_token(token: RefreshToken):
@@ -1260,8 +1269,8 @@ async def admin_upload_files(
 @app.get("/photostudio/user/fileupload", response_model=List[Dict[str, Any]])
 async def get_uploaded_files(
     category: str = Query(..., description="Category of the uploaded files"),
-    limit: int = Query(10, description="Number of files per page"),
-    offset: int = Query(0, description="Page offset"),
+    limit: Optional[int] = Query(10, description="Number of files per page"),
+    offset: Optional[int] = Query(0, description="Page offset"),
     language: str = Query("en", description="Language for response (e.g., 'en', 'ta')")
 ):
     conn = get_db_connection()
@@ -1338,6 +1347,7 @@ async def create_product_frame(
         conn.commit()
 
         return {
+            "message": f"{frame_name}, {frame_id}, {frame_size}, Frame submitted successfully for {phone_number}",
             "frame_id": frame_id,
             "frame_name": frame_name,
             "phone_number": phone_number,
@@ -1383,6 +1393,7 @@ async def get_product_frames(
 
         product_frames = [
             {
+                "message": f"{frame[1]}, {frame[0]}, {frame[3]}, Frame submitted successfully for {frame[2]}",
                 "id": frame[0],
                 "frame_name": frame[1],
                 "phone_number": frame[2],
@@ -3168,34 +3179,6 @@ async def get_matrimony_caste_preferences(
         cur.close()
         conn.close()
 
-
-
-# @app.get("/rashi_compatibility/{rashi1}/{rashi2}")
-# def get_rashi_compatibility(rashi1: str, rashi2: str):
-#     rashi1, rashi2 = rashi1.lower(), rashi2.lower()
-#     compatibility = RASHI_COMPATIBILITY.get((rashi1, rashi2)) or RASHI_COMPATIBILITY.get((rashi2, rashi1))
-#     return {"rashi1": rashi1, "rashi2": rashi2, "compatibility": compatibility or "Unknown"}
-
-# @app.get("/nakshatra_compatibility/{nakshatra1}/{nakshatra2}")
-# def get_nakshatra_compatibility(nakshatra1: str, nakshatra2: str):
-#     nakshatra1, nakshatra2 = nakshatra1.lower(), nakshatra2.lower()
-#     compatibility = NAKSHATRA_COMPATIBILITY.get((nakshatra1, nakshatra2)) or NAKSHATRA_COMPATIBILITY.get((nakshatra2, nakshatra1))
-#     return {"nakshatra1": nakshatra1, "nakshatra2": nakshatra2, "compatibility": compatibility or "Unknown"}
-
-# @app.post("/check_compatibility/")
-# def check_full_compatibility(request: CompatibilityRequest):
-#     rashi_match = RASHI_COMPATIBILITY.get((request.groom_rashi.lower(), request.bride_rashi.lower()))
-#     nakshatra_match = NAKSHATRA_COMPATIBILITY.get((request.groom_nakshatra.lower(), request.bride_nakshatra.lower()))
-    
-#     return {
-#         "groom_rashi": request.groom_rashi,
-#         "bride_rashi": request.bride_rashi,
-#         "rashi_compatibility": rashi_match or "Unknown",
-#         "groom_nakshatra": request.groom_nakshatra,
-#         "bride_nakshatra": request.bride_nakshatra,
-#         "nakshatra_compatibility": nakshatra_match or "Unknown"
-#     }
-
 @app.post("/send-notification", response_model=Dict[str, Any])
 async def send_notification(
     token: str = Query(..., description="Device token to send the notification to"),
@@ -3455,8 +3438,6 @@ async def update_matrimony_profile(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
-
 
 @app.delete("/matrimony/delete-my_profiles")
 async def delete_profile_by_id(
