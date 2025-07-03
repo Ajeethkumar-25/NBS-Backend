@@ -1366,7 +1366,7 @@ async def create_product_frame(
 
 @app.get("/photostudio/admin/product_frames", response_model=List[Dict[str, Any]])
 async def get_product_frames(
-    limit: int = Query(10, description="Number of frames per page"),
+    limit: int = Query(10000, description="Number of frames per page"),
     offset: int = Query(0, description="Page offset"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
@@ -1522,6 +1522,7 @@ async def login (user: UserLogin):
         conn.commit()
         
         return {
+            "message": "Login Successfully",
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
