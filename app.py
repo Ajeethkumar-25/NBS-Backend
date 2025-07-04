@@ -383,6 +383,11 @@ class MatrimonyProfileResponse(BaseModel):
     is_active: Optional[str]
     blood_group: Optional[str]
 
+class MatrimonyProfilesWithMessage(BaseModel):
+    message: str
+    profiles: List[MatrimonyProfileResponse]
+
+
 class OTPRequest(BaseModel):
     mobile_number: str
     full_name: str
@@ -1366,8 +1371,8 @@ async def create_product_frame(
 
 @app.get("/photostudio/admin/product_frames", response_model=List[Dict[str, Any]])
 async def get_product_frames(
-    limit: int = Query(10000, description="Number of frames per page"),
-    offset: int = Query(0, description="Page offset"),
+    # limit: int = Query(10000, description="Number of frames per page"),
+    # offset: int = Query(0, description="Page offset"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     # Ensure only admins can access
@@ -1381,10 +1386,9 @@ async def get_product_frames(
         cur.execute(
             """
             SELECT id, frame_name, phone_number, frame_size, user_photo_urls, frame_color_urls, created_at
-            FROM product_frames
-            LIMIT %s OFFSET %s;
+            FROM product_frames;
             """,
-            (limit, offset)
+            # (limit, offset)
         )
         frames = cur.fetchall()
 
@@ -2847,8 +2851,7 @@ async def get_matrimony_profiles(
         cur.close()
         conn.close()
 
-
-@app.get("/matrimony/preference", response_model=List[MatrimonyProfileResponse])
+@app.get("/matrimony/preference")
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
@@ -2886,7 +2889,7 @@ async def get_matrimony_preferences(
     try:
         # Fetch current user's profile
         cur.execute("""
-            SELECT matrimony_id, gender, preferred_rashi
+            SELECT matrimony_id, full_name, gender, preferred_rashi
             FROM matrimony_profiles 
             WHERE matrimony_id = %s
         """, [current_user.get("matrimony_id")])
@@ -2945,17 +2948,21 @@ async def get_matrimony_preferences(
 
             compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
 
-        return compatible_profiles
+        return {
+            "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found",
+            "profiles": compatible_profiles
+        }
 
-    except Exception:
+    except Exception as e:
+        print(f"Exception occurred: {e}")  # Log the actual exception
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
+
 
     finally:
         cur.close()
         conn.close()
 
-
-@app.get("/matrimony/location-preference", response_model=List[MatrimonyProfileResponse])
+@app.get("/matrimony/location-preference", response_model=MatrimonyProfilesWithMessage)
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
@@ -3061,7 +3068,11 @@ async def get_matrimony_preferences(
 
             compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
 
-        return compatible_profiles
+        return MatrimonyProfilesWithMessage(
+            message=f"{user_profile['matrimony_id']}, {len(compatible_profiles)} location-based profiles found.",
+            profiles=compatible_profiles
+        )
+
 
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
@@ -3070,7 +3081,7 @@ async def get_matrimony_preferences(
         cur.close()
         conn.close()
 
-@app.get("/matrimony/caste-preference", response_model=List[MatrimonyProfileResponse])
+@app.get("/matrimony/caste-preference", response_model=MatrimonyProfilesWithMessage)
 async def get_matrimony_caste_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
@@ -3171,7 +3182,11 @@ async def get_matrimony_caste_preferences(
 
             compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
 
-        return compatible_profiles
+        return MatrimonyProfilesWithMessage(
+            message=f"{user_profile['matrimony_id']}, {len(compatible_profiles)} caste-based profiles found.",
+            profiles=compatible_profiles
+        )
+
 
     except Exception:
         raise HTTPException(status_code=500, detail="Error retrieving caste preference profiles")
@@ -3933,6 +3948,9 @@ async def mark_favorite_profiles(
     request: FavoriteProfilesRequest,
     current_user: dict = Depends(get_current_user_matrimony)
 ):
+    if is_user_blocked(current_user.get("matrimony_id")):
+        raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
+
     matrimony_id = current_user["matrimony_id"]
     user_gender = current_user.get("gender")
 
@@ -4007,6 +4025,9 @@ async def mark_favorite_profiles(
 async def get_favorite_profiles(
     current_user: dict = Depends(get_current_user_matrimony)
 ):
+    if is_user_blocked(current_user.get("matrimony_id")):
+        raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
+
     matrimony_id = current_user["matrimony_id"]
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -4081,6 +4102,7 @@ async def get_favorite_profiles(
 
         return {
             "status": "success",
+            "message": f"{current_user['matrimony_id']} is liked on your profile",
             "favorites": result_profiles
         }
 
