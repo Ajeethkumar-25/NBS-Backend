@@ -467,6 +467,15 @@ class BlockUserSchema(BaseModel):
 class UnblockUserSchema(BaseModel):
     matrimony_id: List[str]
 
+class ContactUsCreate(BaseModel):
+    full_name: str
+    email: EmailStr
+    message: str
+
+class ContactUsResponse(ContactUsCreate):
+    matrimony_id: str
+    created_at: datetime
+
 # Full Rashi compatibility data
 RASHI_COMPATIBILITY = {
     ("mesha", "simha"): "High Compatibility",
@@ -4912,6 +4921,81 @@ async def unblock_user(
     finally:
         cur.close()
         conn.close()
+
+# Contact-us for User 
+
+@app.post("/matrimony/contact-us", response_model=ContactUsResponse)
+def submit_contact_form(
+    data: ContactUsCreate,
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "user":
+        raise HTTPException(status_code=403, detail="Only users can submit contact messages.")
+
+    conn = None
+    cur = None
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=DictCursor)
+
+        # 👇 insert matrimony_id too
+        cur.execute("""
+            INSERT INTO contact_us (matrimony_id, full_name, email, message)
+            VALUES (%s, %s, %s, %s)
+            RETURNING matrimony_id, full_name, email, message, created_at
+        """, (
+            current_user["matrimony_id"],  # 👈 from user session
+            data.full_name,
+            data.email,
+            data.message
+        ))
+
+        row = cur.fetchone()
+        conn.commit()
+
+        return dict(row)
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
+
+# Contact-us for admin
+@app.get("/matrimony/admin/contact-us", response_model=List[ContactUsResponse])
+def get_all_contacts(
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can access contact messages.")
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=DictCursor)
+
+        cur.execute("""
+            SELECT matrimony_id, full_name, email, message, created_at
+            FROM contact_us
+            ORDER BY created_at DESC
+        """)
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]  # ✅ fix
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 
 
