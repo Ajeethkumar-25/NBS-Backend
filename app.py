@@ -3231,9 +3231,6 @@ async def get_all_location_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
 ):
-    if is_user_blocked(current_user.get("matrimony_id")):
-        raise HTTPException(status_code=403, detail="Access denied. You have been blocked by admin.")
-
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
@@ -3959,6 +3956,92 @@ async def get_profile_active_status(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+# Admin can see the deleted profiles list
+@app.delete("/matrimony/admin/delete-profiles")
+async def delete_profiles_by_admin(
+    matrimony_ids: List[str] = Body(..., embed=True, description="List of Matrimony IDs to delete"),
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can delete user profiles")
+
+    deleted_profiles = []
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        for matrimony_id in matrimony_ids:
+            # Step 1: Archive profile before deletion
+            cur.execute("""
+                INSERT INTO deleted_matrimony_profiles
+                SELECT *, CURRENT_TIMESTAMP AS deleted_at
+                FROM matrimony_profiles
+                WHERE matrimony_id = %s;
+            """, (matrimony_id,))
+
+            # Step 2: Delete refresh tokens
+            cur.execute(
+                "DELETE FROM matrimony_refresh_tokens WHERE matrimony_id = %s;",
+                (matrimony_id,)
+            )
+
+            # Step 3: Delete profile and store returned profile
+            cur.execute(
+                "DELETE FROM matrimony_profiles WHERE matrimony_id = %s RETURNING *;",
+                (matrimony_id,)
+            )
+            deleted_profile = cur.fetchone()
+            if deleted_profile:
+                deleted_profiles.append(deleted_profile)
+
+        conn.commit()
+
+        if not deleted_profiles:
+            raise HTTPException(status_code=404, detail="No matching profiles found to delete")
+
+        return {
+            "status": "success",
+            "message": f"{len(deleted_profiles)} profile(s) archived and deleted by admin",
+            "deleted_profiles": deleted_profiles
+        }
+
+    except psycopg2.Error as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+@app.get("/matrimony/admin/deleted-profiles-list")
+async def get_deleted_profiles_by_admin(
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can view deleted profiles")
+
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("SELECT * FROM deleted_matrimony_profiles ORDER BY deleted_at DESC;")
+        deleted_profiles = cur.fetchall()
+
+        return {
+            "status": "success",
+            "total_deleted": len(deleted_profiles),
+            "deleted_profiles": deleted_profiles
+        }
+
+    except psycopg2.Error as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     finally:
         if 'cur' in locals(): cur.close()
@@ -4986,7 +5069,7 @@ def get_all_contacts(
             ORDER BY created_at DESC
         """)
         rows = cur.fetchall()
-        return [dict(row) for row in rows]  # ✅ fix
+        return [dict(row) for row in rows]  
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
