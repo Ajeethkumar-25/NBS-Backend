@@ -4019,12 +4019,12 @@ async def delete_profiles_by_admin(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-@app.get("/matrimony/admin/deleted-profiles-list")
+@app.get("/matrimony/user/deleted-profiles-list")
 async def get_deleted_profiles_by_admin(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
 ):
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admin can view deleted profiles")
+    if current_user.get("user_type") != "user":
+        raise HTTPException(status_code=403, detail="Only user can view deleted profiles")
 
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
