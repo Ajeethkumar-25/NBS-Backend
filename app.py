@@ -3654,7 +3654,7 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
 
 @app.put("/matrimony/my_profiles")
 async def update_matrimony_profile(
-    request: Request,
+    matrimony_id: Optional[str] = Form(None),
     full_name: Optional[str] = Form(None),
     age: Optional[str] = Form(None),
     gender: Optional[str] = Form(None),
@@ -3715,17 +3715,26 @@ async def update_matrimony_profile(
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     try:
-        matrimony_id = current_user.get("matrimony_id")
-        if not matrimony_id:
-            raise HTTPException(status_code=401, detail="Invalid user session")
+        user_type = current_user.get("user_type")
+
+        # Determine matrimony_id
+        if user_type == "admin":
+            if not matrimony_id:
+                raise HTTPException(status_code=400, detail="Admin must provide matrimony_id in form-data to update a profile")
+        elif user_type == "user":
+            matrimony_id = current_user.get("matrimony_id")
+            if not matrimony_id:
+                raise HTTPException(status_code=401, detail="Unauthorized user access")
+        else:
+            raise HTTPException(status_code=403, detail="Invalid user type")
 
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         s3_handler = S3Handler()
 
-        # Add only form parameters to this dict
         update_fields = {
             k: v for k, v in {
+                "matrimony_id": matrimony_id,
                 "full_name": full_name,
                 "age": age,
                 "gender": gender,
@@ -3783,41 +3792,27 @@ async def update_matrimony_profile(
             }.items() if v is not None
         }
 
-        # Upload photo
         if photo:
             photo_url = s3_handler.upload_to_s3(photo, "profile_photos")
             update_fields["photo_path"] = photo_url
 
-        # Upload multiple photos
         if photos:
-            photo_urls = []
-            for file in photos:
-                url = s3_handler.upload_to_s3(file, "photos")
-                photo_urls.append(url)
+            photo_urls = [s3_handler.upload_to_s3(file, "photos") for file in photos]
             update_fields["photos"] = "{" + ",".join(photo_urls) + "}"
 
-        # Upload horoscopes
         if horoscope_documents:
-            horoscope_urls = []
-            for file in horoscope_documents:
-                url = s3_handler.upload_to_s3(file, "horoscopes")
-                horoscope_urls.append(url)
+            horoscope_urls = [s3_handler.upload_to_s3(file, "horoscopes") for file in horoscope_documents]
             update_fields["horoscope_documents"] = "{" + ",".join(horoscope_urls) + "}"
 
         if not update_fields:
             raise HTTPException(status_code=400, detail="No fields provided for update")
 
-        # Add filters
-        update_fields["email"] = email
-        update_fields["matrimony_id"] = matrimony_id
-
-        set_clause = ", ".join([f"{key} = %({key})s" for key in update_fields if key not in ['email', 'matrimony_id']])
+        set_clause = ", ".join([f"{key} = %({key})s" for key in update_fields if key != "matrimony_id"])
 
         update_query = f"""
         UPDATE matrimony_profiles
         SET {set_clause}
-        WHERE (%(email)s IS NULL OR email = %(email)s)
-          AND (%(matrimony_id)s IS NULL OR matrimony_id = %(matrimony_id)s)
+        WHERE matrimony_id = %(matrimony_id)s
         RETURNING *;
         """
 
@@ -3845,6 +3840,7 @@ async def update_matrimony_profile(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
+
 
 @app.delete("/matrimony/delete-my_profiles")
 async def delete_profile_by_id(
