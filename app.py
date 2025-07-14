@@ -73,7 +73,9 @@ async def lifespan(app: FastAPI):
     # Code to run on shutdown (optional)
     logger.info("Shutting down...")
 
+
 app = FastAPI(lifespan=lifespan, title="Photo Studio & Matrimony API", debug=True)
+
 
 # Check OS and set paths accordingly
 if platform.system() == "Windows":
@@ -178,7 +180,6 @@ def is_user_blocked(matrimony_id: str) -> bool:
     finally:
         cur.close()
         conn.close()
-
 
 # Models
 
@@ -3026,7 +3027,7 @@ async def get_matrimony_preferences(
             """
             params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
 
-            if user_profile['preferred_rashi']:
+            if user_profile.get('preferred_rashi'):
                 preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
                 if preferred_rashi_list:
                     query += " AND rashi IS NOT NULL"
@@ -3043,43 +3044,57 @@ async def get_matrimony_preferences(
             compatible_profiles = []
             for profile in results:
                 profile_dict = dict(profile)
+                profile_dict.pop("password", None)
                 profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
                 profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
                 profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
+                # Date formatting
                 if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                     profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
 
                 if isinstance(profile_dict.get("birth_time"), time):
                     profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
+                # Calculate age if not present
                 if profile_dict.get("date_of_birth"):
                     dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
                     today = datetime.today()
-                    profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+                    profile_dict["age"] = str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
 
                 try:
                     profile_model = MatrimonyProfileResponse(**profile_dict)
-                    compatible_profiles.append(profile_model.dict())  # <- serialize to dict
+                    compatible_profiles.append(profile_model.dict())
                 except Exception as e:
                     print("Validation error:", e)
                     print("Bad profile data:", profile_dict)
 
+            # Format user profile cleanly
+            formatted_user_profile = dict(user_profile)
+            formatted_user_profile.pop("password", None)
+            if isinstance(formatted_user_profile.get("date_of_birth"), (datetime, date)):
+                formatted_user_profile["date_of_birth"] = formatted_user_profile["date_of_birth"].strftime('%Y-%m-%d')
+            if isinstance(formatted_user_profile.get("birth_time"), time):
+                formatted_user_profile["birth_time"] = formatted_user_profile["birth_time"].strftime('%H:%M:%S')
+
             return {
-                "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found",
-                "profiles": compatible_profiles
+                "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found. Your profile details are below.",
+                "user_profile": formatted_user_profile,
+                "profile_details": compatible_profiles
             }
 
         except Exception as e:
             print(f"Error for user {user_profile.get('matrimony_id', 'UNKNOWN')}: {e}")
             traceback.print_exc()
             return {
-                "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), profile error occurred",
-                "profiles": []
+                "message": f"{user_profile.get('full_name', 'Unknown')} ({user_profile.get('matrimony_id', 'N/A')}), profile error occurred",
+                "user_profile": user_profile,
+                "profile_details": []
             }
 
     try:
-        cur.execute("SELECT matrimony_id, full_name, gender, preferred_rashi FROM matrimony_profiles WHERE is_active = TRUE")
+        # 🔥 Fetch full profile instead of partial fields
+        cur.execute("SELECT * FROM matrimony_profiles WHERE is_active = TRUE")
         all_users = cur.fetchall()
 
         response_data = []
@@ -3554,6 +3569,8 @@ async def get_admin_caste_preferences(
                     profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
                 compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
+                
+
 
             return {
                 "message": f"{user_profile['matrimony_id']}, {len(compatible_profiles)} caste-based profiles found.",
@@ -3797,8 +3814,21 @@ async def update_matrimony_profile(
             update_fields["photo_path"] = photo_url
 
         if photos:
-            photo_urls = [s3_handler.upload_to_s3(file, "photos") for file in photos]
-            update_fields["photos"] = "{" + ",".join(photo_urls) + "}"
+            # Step 1: Get existing photo URLs from the DB
+            cur.execute("SELECT photos FROM matrimony_profiles WHERE matrimony_id = %s", (matrimony_id,))
+            existing_record = cur.fetchone()
+            existing_photos_list = existing_record.get("photos", []) if existing_record else []
+
+            # Step 2: Upload new photos
+            new_photo_urls = [s3_handler.upload_to_s3(file, "photos") for file in photos]
+
+            # Step 3: Merge and remove duplicates
+            all_photos = list(dict.fromkeys(existing_photos_list + new_photo_urls))
+
+            # Step 4: Update in Postgres array format (FastAPI will handle it correctly)
+            update_fields["photos"] = "{" + ",".join(all_photos) + "}"
+
+
 
         if horoscope_documents:
             horoscope_urls = [s3_handler.upload_to_s3(file, "horoscopes") for file in horoscope_documents]
@@ -5075,6 +5105,32 @@ def get_all_contacts(
         if conn:
             conn.close()
 
+# Dashboard Creation
+
+@app.get("/matrimony/dashboards/gender-counts")
+def get_gender_counts():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT LOWER(gender) AS gender, COUNT(*) 
+            FROM matrimony_profiles 
+            GROUP BY LOWER(gender)
+        """)
+        results = cur.fetchall()
+
+        gender_counts = {gender: count for gender, count in results}
+        return gender_counts
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 
 # Run the application
