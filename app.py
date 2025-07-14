@@ -5142,31 +5142,67 @@ def get_all_contacts(
 
 # Dashboard Creation
 
-@app.get("/matrimony/dashboards/gender-counts")
-def get_gender_counts():
+@app.get("/matrimony/admin/dashboards/overview")
+def get_dashboard_overview(
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can access this dashboard.")
+
     try:
         conn = get_db_connection()
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=DictCursor)
 
+        # Gender counts
         cur.execute("""
             SELECT LOWER(gender) AS gender, COUNT(*) 
             FROM matrimony_profiles 
             GROUP BY LOWER(gender)
         """)
-        results = cur.fetchall()
+        gender_data = cur.fetchall()
+        gender_counts = {row['gender']: row['count'] for row in gender_data}
 
-        gender_counts = {gender: count for gender, count in results}
-        return gender_counts
+        # Active vs Inactive
+        cur.execute("""
+            SELECT is_active, COUNT(*) 
+            FROM matrimony_profiles 
+            GROUP BY is_active
+        """)
+        active_data = cur.fetchall()
+        active_counts = {
+            "active": sum(row['count'] for row in active_data if row['is_active']),
+            "inactive": sum(row['count'] for row in active_data if not row['is_active'])
+        }
+
+        # Blocked vs Unblocked
+        cur.execute("SELECT COUNT(*) FROM matrimony_profiles")
+        total_users = cur.fetchone()["count"]
+
+        # Count of unique blocked users (from blocked_users table)
+        cur.execute("SELECT COUNT(DISTINCT blocked_matrimony_id) FROM blocked_users")
+        blocked_count = cur.fetchone()["count"]
+
+        # Calculate unblocked users
+        blocked_counts = {
+            "blocked": blocked_count,
+            "unblocked": total_users - blocked_count
+        }
+
+
+        return {
+            "gender_counts": gender_counts,
+            "active_status_counts": active_counts,
+            "blocked_status_counts": blocked_counts,
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
     finally:
         if cur:
             cur.close()
         if conn:
             conn.close()
-
 
 # Run the application
 if __name__ == "__main__":
