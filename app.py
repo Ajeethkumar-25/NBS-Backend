@@ -3637,6 +3637,154 @@ async def get_admin_caste_preferences(
         cur.close()
         conn.close()
 
+# overall admin view preference, location, caste preference
+
+@app.get("/matrimony/admin/preference-overview")
+async def get_combined_preferences(
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
+    case_sensitive: Optional[bool] = Query(default=False)
+):
+    if is_user_blocked(current_user.get("matrimony_id")):
+        raise HTTPException(status_code=403, detail="Access denied. You have been blocked by admin.")
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+
+    def process_s3_url(url, folder_name):
+        if url and isinstance(url, str):
+            if url.startswith("http"):
+                return url
+            return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+        return None
+
+    def process_s3_urls(value, folder_name):
+        if not value:
+            return None
+        if isinstance(value, str):
+            items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+        return [
+            item if item.startswith("http") else
+            f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
+            for item in items
+        ]
+
+    def format_profile(profile):
+        profile_dict = dict(profile)
+        profile_dict.pop("password", None)
+        profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
+        profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
+        profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
+        if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
+            profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
+        if isinstance(profile_dict.get("birth_time"), time):
+            profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
+        if profile_dict.get("date_of_birth"):
+            dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
+            today = datetime.today()
+            profile_dict["age"] = str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
+        return profile_dict
+
+    def get_opposite_gender(gender: str) -> str:
+        return "Male" if gender.lower() == "female" else "Female"
+
+    def fetch_matches(user_profile, preference_type):
+        try:
+            gender = user_profile["gender"].strip()
+            opposite_gender = get_opposite_gender(gender)
+
+            base_query = f"""
+                SELECT * FROM matrimony_profiles
+                WHERE gender ILIKE %s
+                AND matrimony_id != %s
+                AND is_active = TRUE
+                AND matrimony_id NOT IN (
+                    SELECT blocked_matrimony_id FROM blocked_users WHERE admin_matrimony_id = %s
+                )
+            """
+            params = [opposite_gender, user_profile["matrimony_id"], user_profile["matrimony_id"]]
+
+            if preference_type == "preference":
+                if user_profile.get('preferred_rashi'):
+                    preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
+                    if preferred_rashi_list:
+                        base_query += " AND rashi IS NOT NULL"
+                        base_query += " AND " + ("rashi = ANY(%s)" if case_sensitive else "LOWER(rashi) = ANY(%s)")
+                        params.append(preferred_rashi_list if case_sensitive else [r.lower() for r in preferred_rashi_list])
+            elif preference_type == "location":
+                base_query += " AND TRIM(work_location) IS NOT NULL AND TRIM(work_location) != ''"
+                if user_profile.get('preferred_location'):
+                    preferred_location_list = [l.strip() for l in user_profile['preferred_location'].split(",") if l.strip()]
+                    base_query += " AND " + ("work_location = ANY(%s)" if case_sensitive else "LOWER(work_location) = ANY(%s)")
+                    params.append(preferred_location_list if case_sensitive else [l.lower() for l in preferred_location_list])
+            elif preference_type == "caste":
+                base_query += " AND TRIM(caste) IS NOT NULL AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')"
+                if user_profile.get('preferred_caste'):
+                    preferred_castes = [
+                        c.strip() for c in user_profile['preferred_caste'].split(",")
+                        if c.strip().lower() not in ['null', 'none', 'nan', 'nil', 'not specified']
+                    ]
+                    base_query += " AND caste IS NOT NULL"
+                    base_query += " AND " + ("caste = ANY(%s)" if case_sensitive else "LOWER(caste) = ANY(%s)")
+                    params.append(preferred_castes if case_sensitive else [c.lower() for c in preferred_castes])
+
+            cur.execute(base_query, params)
+            profiles = cur.fetchall()
+            return [format_profile(p) for p in profiles]
+
+        except Exception as e:
+            print(f"Error in fetch_matches for {preference_type}: {e}")
+            return []
+
+    try:
+        cur.execute("SELECT * FROM matrimony_profiles WHERE is_active = TRUE")
+        all_users = cur.fetchall()
+
+        user_profiles = []
+        preference_matches = []
+        location_matches = []
+        caste_matches = []
+
+        for user in all_users:
+            user_formatted = format_profile(user)
+            user_profiles.append(user_formatted)
+
+            preference_profiles = fetch_matches(user, "preference")
+            preference_matches.append({
+                "matrimony_id": user["matrimony_id"],
+                "compatible_profiles": preference_profiles
+            })
+
+            location_profiles = fetch_matches(user, "location")
+            location_matches.append({
+                "matrimony_id": user["matrimony_id"],
+                "compatible_profiles": location_profiles
+            })
+
+            caste_profiles = fetch_matches(user, "caste")
+            caste_matches.append({
+                "matrimony_id": user["matrimony_id"],
+                "compatible_profiles": caste_profiles
+            })
+
+        return {
+            "user_profiles": user_profiles,
+            "preference": preference_matches,
+            "location_preference": location_matches,
+            "caste_preference": caste_matches
+        }
+
+    except Exception as e:
+        print("Top-level error:", e)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Failed to compile preference overview.")
+
+    finally:
+        cur.close()
+        conn.close()
 
 @app.post("/send-notification", response_model=Dict[str, Any])
 async def send_notification(
