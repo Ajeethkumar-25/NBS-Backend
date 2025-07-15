@@ -5201,7 +5201,7 @@ def get_dashboard_overview(
             "unblocked": total_users - blocked_count
         }
 
-        # Most Amount Spent (₹)
+        # 🔥 Top 5 Spenders
         cur.execute("""
             SELECT 
                 pt.matrimony_id, 
@@ -5212,16 +5212,18 @@ def get_dashboard_overview(
             WHERE pt.transaction_type = 'recharge'
             GROUP BY pt.matrimony_id, mp.full_name
             ORDER BY total_amount DESC
-            LIMIT 1
+            LIMIT 5
         """)
-        row = cur.fetchone()
-        top_spender = {
-            "matrimony_id": row["matrimony_id"],
-            "full_name": row["full_name"],
-            "total_amount": float(row["total_amount"])
-        } if row else None
+        top_spenders = [
+            {
+                "matrimony_id": row["matrimony_id"],
+                "full_name": row["full_name"],
+                "total_amount": float(row["total_amount"])
+            }
+            for row in cur.fetchall()
+        ]
 
-        # Most Points Consumed (Spent On)
+        # 💎 Top 5 Profiles by Points Consumed (Spent On)
         cur.execute("""
             SELECT 
                 sa.target_matrimony_id AS matrimony_id,
@@ -5231,22 +5233,24 @@ def get_dashboard_overview(
             JOIN matrimony_profiles mp ON mp.matrimony_id = sa.target_matrimony_id
             GROUP BY sa.target_matrimony_id, mp.full_name
             ORDER BY total_points_spent DESC
-            LIMIT 1
+            LIMIT 5
         """)
-        row = cur.fetchone()
-        top_points_profile = {
-            "matrimony_id": row["matrimony_id"],
-            "full_name": row["full_name"],
-            "points_spent": int(row["total_points_spent"])
-        } if row else None
+        top_profiles_by_points = [
+            {
+                "matrimony_id": row["matrimony_id"],
+                "full_name": row["full_name"],
+                "points_spent": int(row["total_points_spent"])
+            }
+            for row in cur.fetchall()
+        ]
 
         return {
             "gender_counts": gender_counts,
             "active_status_counts": active_counts,
             "active_status_trend": active_graph_points,
             "blocked_status_counts": blocked_counts,
-            "top_spender": top_spender,
-            "top_profile_by_points": top_points_profile
+            "top_spenders": top_spenders,
+            "top_profiles_by_points": top_profiles_by_points
         }
 
     except Exception as e:
