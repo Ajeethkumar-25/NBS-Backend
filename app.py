@@ -5141,6 +5141,7 @@ def get_all_contacts(
             conn.close()
 
 # Dashboard Creation
+from collections import defaultdict
 
 @app.get("/matrimony/admin/dashboards/overview")
 def get_dashboard_overview(
@@ -5162,47 +5163,100 @@ def get_dashboard_overview(
         gender_data = cur.fetchall()
         gender_counts = {row['gender']: row['count'] for row in gender_data}
 
-        # Active vs Inactive
+        # Active vs Inactive (Last 30 Days)
         cur.execute("""
-            SELECT is_active, COUNT(*) 
-            FROM matrimony_profiles 
-            GROUP BY is_active
+            SELECT 
+                DATE(updated_at) AS updated_date,
+                is_active,
+                COUNT(*) AS total
+            FROM matrimony_profiles
+            WHERE updated_at >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY DATE(updated_at), is_active
+            ORDER BY updated_date;
         """)
         active_data = cur.fetchall()
+
+        graph_data = defaultdict(lambda: {"date": None, "active": 0, "inactive": 0})
+        for row in active_data:
+            date_str = row["updated_date"].strftime('%Y-%m-%d')
+            graph_data[date_str]["date"] = date_str
+            if row["is_active"]:
+                graph_data[date_str]["active"] = row["total"]
+            else:
+                graph_data[date_str]["inactive"] = row["total"]
+        active_graph_points = list(sorted(graph_data.values(), key=lambda x: x["date"]))
         active_counts = {
-            "active": sum(row['count'] for row in active_data if row['is_active']),
-            "inactive": sum(row['count'] for row in active_data if not row['is_active'])
+            "active": sum(row["active"] for row in active_graph_points),
+            "inactive": sum(row["inactive"] for row in active_graph_points),
         }
 
         # Blocked vs Unblocked
-        cur.execute("SELECT COUNT(*) FROM matrimony_profiles")
+        cur.execute("SELECT COUNT(*) AS count FROM matrimony_profiles")
         total_users = cur.fetchone()["count"]
 
-        # Count of unique blocked users (from blocked_users table)
-        cur.execute("SELECT COUNT(DISTINCT blocked_matrimony_id) FROM blocked_users")
+        cur.execute("SELECT COUNT(DISTINCT blocked_matrimony_id) AS count FROM blocked_users")
         blocked_count = cur.fetchone()["count"]
-
-        # Calculate unblocked users
         blocked_counts = {
             "blocked": blocked_count,
             "unblocked": total_users - blocked_count
         }
 
+        # Most Amount Spent (₹)
+        cur.execute("""
+            SELECT 
+                pt.matrimony_id, 
+                mp.full_name, 
+                SUM(pt.amount) AS total_amount
+            FROM point_transactions pt
+            JOIN matrimony_profiles mp ON mp.matrimony_id = pt.matrimony_id
+            WHERE pt.transaction_type = 'recharge'
+            GROUP BY pt.matrimony_id, mp.full_name
+            ORDER BY total_amount DESC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        top_spender = {
+            "matrimony_id": row["matrimony_id"],
+            "full_name": row["full_name"],
+            "total_amount": float(row["total_amount"])
+        } if row else None
+
+        # Most Points Consumed (Spent On)
+        cur.execute("""
+            SELECT 
+                sa.target_matrimony_id AS matrimony_id,
+                mp.full_name,
+                SUM(sa.points) AS total_points_spent
+            FROM spend_actions sa
+            JOIN matrimony_profiles mp ON mp.matrimony_id = sa.target_matrimony_id
+            GROUP BY sa.target_matrimony_id, mp.full_name
+            ORDER BY total_points_spent DESC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        top_points_profile = {
+            "matrimony_id": row["matrimony_id"],
+            "full_name": row["full_name"],
+            "points_spent": int(row["total_points_spent"])
+        } if row else None
 
         return {
             "gender_counts": gender_counts,
             "active_status_counts": active_counts,
+            "active_status_trend": active_graph_points,
             "blocked_status_counts": blocked_counts,
+            "top_spender": top_spender,
+            "top_profile_by_points": top_points_profile
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
+
 
 # Run the application
 if __name__ == "__main__":
