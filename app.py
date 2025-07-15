@@ -5206,11 +5206,12 @@ def get_dashboard_overview(
             SELECT 
                 pt.matrimony_id, 
                 mp.full_name, 
+                mp.photo_path,
                 SUM(pt.amount) AS total_amount
             FROM point_transactions pt
             JOIN matrimony_profiles mp ON mp.matrimony_id = pt.matrimony_id
             WHERE pt.transaction_type = 'recharge'
-            GROUP BY pt.matrimony_id, mp.full_name
+            GROUP BY pt.matrimony_id, mp.full_name, mp.photo_path
             ORDER BY total_amount DESC
             LIMIT 5
         """)
@@ -5218,6 +5219,7 @@ def get_dashboard_overview(
             {
                 "matrimony_id": row["matrimony_id"],
                 "full_name": row["full_name"],
+                "photo": row["photo_path"],
                 "total_amount": float(row["total_amount"])
             }
             for row in cur.fetchall()
@@ -5228,10 +5230,11 @@ def get_dashboard_overview(
             SELECT 
                 sa.target_matrimony_id AS matrimony_id,
                 mp.full_name,
+                mp.photo_path,
                 SUM(sa.points) AS total_points_spent
             FROM spend_actions sa
             JOIN matrimony_profiles mp ON mp.matrimony_id = sa.target_matrimony_id
-            GROUP BY sa.target_matrimony_id, mp.full_name
+            GROUP BY sa.target_matrimony_id, mp.full_name, mp.photo_path
             ORDER BY total_points_spent DESC
             LIMIT 5
         """)
@@ -5239,6 +5242,7 @@ def get_dashboard_overview(
             {
                 "matrimony_id": row["matrimony_id"],
                 "full_name": row["full_name"],
+                "photo": row["photo_path"],
                 "points_spent": int(row["total_points_spent"])
             }
             for row in cur.fetchall()
