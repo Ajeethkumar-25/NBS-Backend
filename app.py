@@ -5415,9 +5415,7 @@ def get_dashboard_overview(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
-
-
+    
 # Run the application
 if __name__ == "__main__":
     import uvicorn
