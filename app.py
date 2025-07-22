@@ -727,6 +727,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         
+        
         # Return user details as a dictionary
         return {
             "id": user[0],
