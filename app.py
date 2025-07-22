@@ -1030,11 +1030,14 @@ async def login(user: UserLogin):
             "refresh_token": refresh_token,
             "token_type": "bearer",
             "email": db_user[1],
-            "user_type": db_user[3]  # Include user_type in the response
+            "user_type": db_user[3]  
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()  #
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
     finally:
         cur.close()
         conn.close()
