@@ -738,7 +738,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
     
 def get_current_user_matrimony(token: str) -> Dict[str, Any]:
     try:
-        payload = jwt.decode(token, "your_secret_key", algorithms=["HS256"])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id = payload.get("sub")
         user_type = payload.get("user_type")
         
@@ -2859,7 +2859,7 @@ async def get_matrimony_profiles(
 
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error while fetching profiles.")
+        raise HTTPException(status_code=200, detail="Server error while fetching profiles.")
     finally:
         cur.close()
         conn.close()
