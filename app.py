@@ -3122,9 +3122,7 @@ async def get_matrimony_preferences(
     finally:
         cur.close()
         conn.close()
-
-
-
+    
 @app.get("/matrimony/location-preference", response_model=MatrimonyProfilesWithMessage)
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
@@ -4879,8 +4877,8 @@ async def user_to_admin_chat(
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     try:
-        if current_user["user_type"] != "user":
-            raise HTTPException(status_code=403, detail="Only users can access this endpoint")
+        if current_user["user_type"] not in ["user", "admin"]:
+            raise HTTPException(status_code=403, detail="Only users and admins can access this endpoint")
 
         sender_id = current_user["matrimony_id"]
         admin_email = request.receiver_email
