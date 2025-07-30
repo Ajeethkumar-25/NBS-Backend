@@ -383,11 +383,20 @@ class MatrimonyProfileResponse(BaseModel):
     quarter: Optional[str]
     is_active: Optional[str]
     blood_group: Optional[str]
+    is_verified:  Optional[str]
+    verification_status: Optional[str] 
+    verification_comment: Optional[str] 
 
 class MatrimonyProfilesWithMessage(BaseModel):
     message: str
     profiles: List[MatrimonyProfileResponse]
 
+
+class AdminProfileVerificationSummary(BaseModel):
+    message: str
+    pending_count: int
+    approved_count: int
+    profiles: List[MatrimonyProfileResponse]
 
 class OTPRequest(BaseModel):
     mobile_number: str
@@ -4418,7 +4427,6 @@ async def recharge_wallet(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-
 @app.post("/wallet/spend")
 async def spend_points_from_user_wallet(
     payload: SpendRequestPayload,
@@ -4629,6 +4637,70 @@ async def get_wallet_balance(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
+
+# Admin view 
+@app.post("/admin/wallet/revert-spend")
+async def revert_spend_action(
+    spend_id: int = Form(...),
+    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
+    try:
+        conn = psycopg2.connect(**settings.DB_CONFIG)
+        cur = conn.cursor()
+
+        # Fetch the spend action
+        cur.execute("""
+            SELECT id, matrimony_id, target_matrimony_id, points 
+            FROM spend_actions 
+            WHERE id = %s
+        """, (spend_id,))
+        spend_record = cur.fetchone()
+
+        if not spend_record:
+            raise HTTPException(status_code=404, detail="Spend action not found")
+
+        spend_id, source_id, target_id, points = spend_record
+
+        # Add points back to the user's wallet
+        cur.execute("""
+            UPDATE wallets
+            SET points_balance = points_balance + %s, updated_at = now()
+            WHERE matrimony_id = %s
+        """, (points, source_id))
+
+        # Insert reversal transaction
+        cur.execute("""
+            INSERT INTO point_transactions (matrimony_id, transaction_type, points, amount, reference_id)
+            VALUES (%s, 'revert', %s, NULL, %s)
+        """, (source_id, points, spend_id))
+
+
+        # Optional: Delete or mark the original spend action as reverted
+        cur.execute("""
+            UPDATE spend_actions
+            SET reverted = TRUE, reverted_at = now()
+            WHERE id = %s
+        """, (spend_id,))
+
+        conn.commit()
+
+        return {
+            "status": "success",
+            "message": f"Reverted {points} points for spend_id {spend_id}",
+            "refunded_points": points
+        }
+
+    except Exception as e:
+        conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Failed to revert spend")
+
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
+
 
 @app.post("/matrimony/favorite-profiles", response_model=Dict[str, Any])
 async def mark_favorite_profiles(
@@ -5414,6 +5486,84 @@ def get_dashboard_overview(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
     
+# ------------------- Profile Verification/Approved/Pending -------------------   
+@app.post("/admin/profile/verify")
+async def verify_profile(
+    matrimony_id: str = Form(...),
+    action: str = Form(...),  # values: "approve", "reject"
+    comment: str = Form(None),
+    admin: dict = Depends(get_current_user_matrimony)
+):
+    if admin["user_type"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access only")
+
+    if action not in ["approve", "reject"]:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    conn = psycopg2.connect(**settings.DB_CONFIG)
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE matrimony_profiles
+        SET is_verified = %s,
+            verification_status = %s,
+            verification_comment = %s
+        WHERE matrimony_id = %s
+    """, (
+        True if action == "approve" else False,
+        action,
+        comment,
+        matrimony_id
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"message": f"Profile {'approved' if action == 'approve' else 'rejected'} successfully"}
+
+# ------------------- Get Unverified Profiles ------------------- 
+
+@app.get("/admin/profiles/unverified", response_model=AdminProfileVerificationSummary)
+async def get_unverified_profiles(admin: dict = Depends(get_current_user_matrimony)):
+    if admin["user_type"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access only")
+
+    conn = psycopg2.connect(**settings.DB_CONFIG)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # Get pending profiles
+    cur.execute("SELECT * FROM matrimony_profiles WHERE verification_status = 'pending'")
+    profiles = cur.fetchall()
+
+    # Get count of pending and approved
+    cur.execute("""
+        SELECT verification_status, COUNT(*) as count
+        FROM matrimony_profiles
+        WHERE verification_status IN ('pending', 'approve')
+        GROUP BY verification_status
+    """)
+    status_counts = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    pending_count = 0
+    approved_count = 0
+    for row in status_counts:
+        if row["verification_status"] == "pending":
+            pending_count = row["count"]
+        elif row["verification_status"] == "approve":
+            approved_count = row["count"]
+
+    return {
+        "message": "Fetched pending profiles successfully",
+        "pending_count": pending_count,
+        "approved_count": approved_count,
+        "profiles": profiles
+    }
+
+
+
 # Run the application
 if __name__ == "__main__":
     import uvicorn
