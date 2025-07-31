@@ -37,6 +37,7 @@ from twilio.rest import Client
 from dotenv import load_dotenv
 import traceback
 from astrology_terms import ASTROLOGY_TERMS
+from natchatram_match import NakshatraMatcher
 
 # Twilio credentials (hardcoded)
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -75,7 +76,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, title="Photo Studio & Matrimony API", debug=True)
-
+nakshatra_matcher = NakshatraMatcher()
 
 # Check OS and set paths accordingly
 if platform.system() == "Windows":
@@ -520,13 +521,7 @@ NAKSHATRA_COMPATIBILITY = {
     ("anuradha", "jyestha"): "Good Compatibility",
     ("purva_bhadrapada", "uttara_bhadrapada"): "Excellent Compatibility",
 }
-
-class CompatibilityRequest(BaseModel):
-    groom_rashi: str
-    groom_nakshatra: str
-    bride_rashi: str
-    bride_nakshatra: str
-
+# Initialize the translator
 class S3Handler:
     def __init__(self):
         self.aws_access_key = os.getenv("aws_access_key")
@@ -2734,6 +2729,8 @@ async def get_matrimony_profiles(
                     SELECT blocked_matrimony_id
                     FROM blocked_users
                     WHERE is_blocked = true
+                        AND is_verified = true
+                        AND verification_status = 'approve'
                 )
             """
             params.append(opposite_gender)
@@ -2912,7 +2909,7 @@ async def get_matrimony_preferences(
     try:
         # Fetch current user's profile
         cur.execute("""
-            SELECT matrimony_id, full_name, gender, preferred_rashi
+            SELECT matrimony_id, full_name, gender, preferred_rashi, nakshatra
             FROM matrimony_profiles 
             WHERE matrimony_id = %s
         """, [current_user.get("matrimony_id")])
@@ -2929,6 +2926,8 @@ async def get_matrimony_preferences(
             WHERE gender ILIKE %s
             AND matrimony_id != %s
             AND is_active = TRUE
+            AND is_verified = true
+            AND verification_status = 'approve'
             AND matrimony_id NOT IN (
                 SELECT blocked_matrimony_id 
                 FROM blocked_users 
@@ -2969,6 +2968,33 @@ async def get_matrimony_preferences(
                 today = datetime.today()
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
+            # --- NAKSHATRA COMPATIBILITY CHECK ---
+            boy_star = user_profile['nakshatra']
+            # boy_padham = user_profile.get('nakshatra_padham')
+            girl_star = profile.get('nakshatra')
+            # girl_padham = profile.get('nakshatra_padham')
+
+            if not boy_star or not girl_star:
+                continue  # skip if either is missing
+
+            if user_gender.lower() == "male":
+                match_result = nakshatra_matcher.check_compatibility(
+                    boy_star, girl_star
+                )
+            else:
+                match_result = nakshatra_matcher.check_compatibility(
+                    girl_star, boy_star
+                )
+
+            if not match_result or not (match_result['is_utthamam'] or match_result['is_madhyamam']):
+                continue  # skip incompatible matches
+
+            # Append optional match info
+            profile_dict['nakshatra_match_score'] = match_result['combined_score']
+            profile_dict['nakshatra_match_type'] = (
+                'Utthamam' if match_result['is_utthamam'] else 'Madhyamam'
+            )
+
             compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
 
         return {
@@ -2977,9 +3003,8 @@ async def get_matrimony_preferences(
         }
 
     except Exception as e:
-        print(f"Exception occurred: {e}")  # Log the actual exception
+        print(f"Exception occurred: {e}")
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
-
 
     finally:
         cur.close()
@@ -3032,6 +3057,8 @@ async def get_matrimony_preferences(
                 WHERE gender ILIKE %s
                 AND matrimony_id != %s
                 AND is_active = TRUE
+                AND is_verified = true
+                AND verification_status = 'approve'
                 AND matrimony_id NOT IN (
                     SELECT blocked_matrimony_id 
                     FROM blocked_users 
@@ -3191,6 +3218,8 @@ async def get_matrimony_preferences(
               AND TRIM(work_location) != ''
               AND LOWER(TRIM(work_location)) != 'null'
               AND is_active = TRUE
+              AND is_verified = TRUE
+              AND verified_status = 'approve'
                 AND matrimony_id NOT IN (
                   SELECT blocked_matrimony_id 
                   FROM blocked_users 
@@ -3298,6 +3327,8 @@ async def get_all_location_preferences(
                   AND TRIM(work_location) != ''
                   AND LOWER(TRIM(work_location)) != 'null'
                   AND is_active = TRUE
+                  AND is_verified = TRUE
+                  AND verified_status = 'approve'
                   AND matrimony_id NOT IN (
                       SELECT blocked_matrimony_id 
                       FROM blocked_users 
@@ -3453,6 +3484,8 @@ async def get_matrimony_caste_preferences(
               AND TRIM(caste) != ''
               AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
               AND is_active = TRUE
+              AND is_verified = TRUE
+              AND verified_status = 'approve'
               AND matrimony_id NOT IN (
                   SELECT blocked_matrimony_id 
                   FROM blocked_users 
@@ -3562,6 +3595,8 @@ async def get_admin_caste_preferences(
                 AND TRIM(caste) != ''
                 AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
                 AND is_active = TRUE
+                AND is_verified = TRUE
+                AND verification_status = 'approve'
                 AND matrimony_id NOT IN (
                     SELECT blocked_matrimony_id 
                     FROM blocked_users 
@@ -3834,6 +3869,9 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
         WHERE 
             (%(email)s IS NULL OR mp.email = %(email)s)
             AND (%(matrimony_id)s IS NULL OR mp.matrimony_id = %(matrimony_id)s)
+                AND mp.is_active = TRUE
+                AND mp.is_verified = TRUE
+                AND mp.verified_status = 'approve'
         GROUP BY 
             mp.id
         LIMIT 1;
@@ -5522,46 +5560,66 @@ async def verify_profile(
     return {"message": f"Profile {'approved' if action == 'approve' else 'rejected'} successfully"}
 
 # ------------------- Get Unverified Profiles ------------------- 
-
 @app.get("/admin/profiles/unverified", response_model=AdminProfileVerificationSummary)
-async def get_unverified_profiles(admin: dict = Depends(get_current_user_matrimony)):
-    if admin["user_type"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access only")
-
+async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_matrimony)):
     conn = psycopg2.connect(**settings.DB_CONFIG)
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # Get pending profiles
-    cur.execute("SELECT * FROM matrimony_profiles WHERE verification_status = 'pending'")
-    profiles = cur.fetchall()
+    try:
+        if current_user["user_type"] == "admin":
+            # Admin: fetch all pending profiles
+            cur.execute("SELECT * FROM matrimony_profiles WHERE verification_status = 'pending'")
+            profiles = cur.fetchall()
 
-    # Get count of pending and approved
-    cur.execute("""
-        SELECT verification_status, COUNT(*) as count
-        FROM matrimony_profiles
-        WHERE verification_status IN ('pending', 'approve')
-        GROUP BY verification_status
-    """)
-    status_counts = cur.fetchall()
+            cur.execute("""
+                SELECT verification_status, COUNT(*) as count
+                FROM matrimony_profiles
+                WHERE verification_status IN ('pending', 'approved')
+                GROUP BY verification_status
+            """)
+            status_counts = cur.fetchall()
+        else:
+            # User: fetch their own profile (pending or approved)
+            cur.execute("""
+                SELECT * FROM matrimony_profiles
+                WHERE matrimony_id = %s
+            """, [current_user["matrimony_id"]])
+            profile = cur.fetchone()
+            profiles = [profile] if profile else []
 
-    cur.close()
-    conn.close()
+            # Count based on their own profile status
+            pending_count = 1 if profile and profile["verification_status"] == "pending" else 0
+            approved_count = 1 if profile and profile["verification_status"] == "approve" else 0
+            return {
+                "message": "Fetched your profile verification data successfully",
+                "pending_count": pending_count,
+                "approved_count": approved_count,
+                "profiles": profiles
+            }
 
-    pending_count = 0
-    approved_count = 0
-    for row in status_counts:
-        if row["verification_status"] == "pending":
-            pending_count = row["count"]
-        elif row["verification_status"] == "approve":
-            approved_count = row["count"]
+        # Admin count aggregation
+        pending_count = 0
+        approved_count = 0
+        for row in status_counts:
+            if row["verification_status"] == "pending":
+                pending_count = row["count"]
+            elif row["verification_status"] == "approve":
+                approved_count = row["count"]
 
-    return {
-        "message": "Fetched pending profiles successfully",
-        "pending_count": pending_count,
-        "approved_count": approved_count,
-        "profiles": profiles
-    }
+        return {
+            "message": "Fetched verification data successfully",
+            "pending_count": pending_count,
+            "approved_count": approved_count,
+            "profiles": profiles
+        }
 
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching verification profiles")
+
+    finally:
+        cur.close()
+        conn.close()
 
 
 # Run the application
