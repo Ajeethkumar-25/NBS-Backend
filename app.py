@@ -4426,20 +4426,29 @@ async def get_deactivation_reports(
 @app.post("/wallet/recharge")
 async def recharge_wallet(
     amount: float = Query(...),
+    matrimony_id: Optional[str] = Query(None, description="Matrimony ID of the user to recharge"),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     if current_user["user_type"] not in ["user", "admin"]:
-            raise HTTPException(status_code=403, detail="Only users and admins can access this endpoint")
-    if is_user_blocked(current_user.get("matrimony_id")):
-        raise HTTPException(status_code=403, detail="Access denied. You have been blocked by admin.")  
-    if amount not in [200, 500, 1000]:
-        raise HTTPException(status_code=400, detail="Invalid recharge amount. Allowed amounts are 200, 500, or 1000.")
+        raise HTTPException(status_code=403, detail="Only users and admins can access this endpoint")
     
-    matrimony_id = current_user["matrimony_id"]
-    rate_chart = {100: 500, 200: 1000, 500: 3000, 1000: 7000}
-
+    if current_user["user_type"] == "admin":
+        if not matrimony_id:
+            raise HTTPException(status_code=400, detail="Admin must specify matrimony_id to recharge")
+    else:
+        # 🚫 Prevent users from recharging other accounts
+        if matrimony_id and matrimony_id != current_user.get("matrimony_id"):
+            raise HTTPException(status_code=403, detail="Users are not allowed to recharge other accounts")
+        matrimony_id = current_user.get("matrimony_id")
+        
+        if is_user_blocked(matrimony_id):
+            raise HTTPException(status_code=403, detail="Access denied. You have been blocked by admin.")  
+    if not matrimony_id:
+        raise HTTPException(status_code=400, detail="Matrimony ID is required for recharge")
+    
+    rate_chart = {200: 1000, 500: 3000, 1000: 7000}
     if amount not in rate_chart:
-        raise HTTPException(status_code=400, detail="Invalid recharge amount")
+        raise HTTPException(status_code=400, detail="Invalid recharge amount. Allowed: 200, 500, 1000")
 
     points = rate_chart[amount]
 
@@ -4460,17 +4469,17 @@ async def recharge_wallet(
         """, (matrimony_id, points, amount))
 
         conn.commit()
-
         return {"status": "success", "points_added": points}
 
     except Exception as e:
-        conn.rollback()
+        if 'conn' in locals(): conn.rollback()
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
+
 
 @app.post("/wallet/spend")
 async def spend_points_from_user_wallet(
