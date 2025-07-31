@@ -4428,8 +4428,15 @@ async def recharge_wallet(
     amount: float = Query(...),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
+    if current_user["user_type"] not in ["user", "admin"]:
+            raise HTTPException(status_code=403, detail="Only users and admins can access this endpoint")
+    if is_user_blocked(current_user.get("matrimony_id")):
+        raise HTTPException(status_code=403, detail="Access denied. You have been blocked by admin.")  
+    if amount not in [200, 500, 1000]:
+        raise HTTPException(status_code=400, detail="Invalid recharge amount. Allowed amounts are 200, 500, or 1000.")
+    
     matrimony_id = current_user["matrimony_id"]
-    rate_chart = {200: 1000, 500: 3000, 1000: 7000}
+    rate_chart = {100: 500, 200: 1000, 500: 3000, 1000: 7000}
 
     if amount not in rate_chart:
         raise HTTPException(status_code=400, detail="Invalid recharge amount")
