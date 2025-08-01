@@ -3377,7 +3377,7 @@ async def get_matrimony_preferences_admin(
             
             response_data.append({
                 "user_profile": user_dict,
-                "profiles": compatible_profiles,
+                "profile_details": compatible_profiles,
                 "compatible_count": len(compatible_profiles),
                 "last_updated": datetime.now().isoformat()
             })
