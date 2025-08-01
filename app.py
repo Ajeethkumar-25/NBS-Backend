@@ -3219,7 +3219,7 @@ async def get_matrimony_preferences(
               AND LOWER(TRIM(work_location)) != 'null'
               AND is_active = TRUE
               AND is_verified = TRUE
-              AND verified_status = 'approve'
+              AND verification_status = 'approve'
                 AND matrimony_id NOT IN (
                   SELECT blocked_matrimony_id 
                   FROM blocked_users 
@@ -3328,7 +3328,7 @@ async def get_all_location_preferences(
                   AND LOWER(TRIM(work_location)) != 'null'
                   AND is_active = TRUE
                   AND is_verified = TRUE
-                  AND verified_status = 'approve'
+                  AND verification_status = 'approve'
                   AND matrimony_id NOT IN (
                       SELECT blocked_matrimony_id 
                       FROM blocked_users 
@@ -3485,7 +3485,7 @@ async def get_matrimony_caste_preferences(
               AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
               AND is_active = TRUE
               AND is_verified = TRUE
-              AND verified_status = 'approve'
+              AND verification_status = 'approve'
               AND matrimony_id NOT IN (
                   SELECT blocked_matrimony_id 
                   FROM blocked_users 
@@ -3871,7 +3871,7 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
             AND (%(matrimony_id)s IS NULL OR mp.matrimony_id = %(matrimony_id)s)
                 AND mp.is_active = TRUE
                 AND mp.is_verified = TRUE
-                AND mp.verified_status = 'approve'
+                AND mp.verification_status = 'approve'
         GROUP BY 
             mp.id
         LIMIT 1;
