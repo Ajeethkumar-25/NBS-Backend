@@ -37,7 +37,7 @@ from twilio.rest import Client
 from dotenv import load_dotenv
 import traceback
 from astrology_terms import ASTROLOGY_TERMS
-from natchatram_match import NakshatraMatcher
+
 
 # Twilio credentials (hardcoded)
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -76,7 +76,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, title="Photo Studio & Matrimony API", debug=True)
-nakshatra_matcher = NakshatraMatcher()
 
 # Check OS and set paths accordingly
 if platform.system() == "Windows":
@@ -487,40 +486,208 @@ class ContactUsResponse(ContactUsCreate):
     matrimony_id: str
     created_at: datetime
 
-# Full Rashi compatibility data
-RASHI_COMPATIBILITY = {
-    ("mesha", "simha"): "High Compatibility",
-    ("mesha", "dhanu"): "High Compatibility",
-    ("vrishabha", "kanya"): "Good Compatibility",
-    ("vrishabha", "makara"): "Good Compatibility",
-    ("mithuna", "tula"): "Moderate Compatibility",
-    ("mithuna", "kumbha"): "Good Compatibility",
-    ("kataka", "vrischika"): "Very High Compatibility",
-    ("kataka", "meena"): "Very High Compatibility",
-    ("simha", "dhanu"): "Excellent Compatibility",
-    ("tula", "mithuna"): "Strong Compatibility",
-    ("dhanu", "mesha"): "High Compatibility",
-    ("makara", "vrishabha"): "Good Compatibility",
-    ("kumbha", "mithuna"): "Good Compatibility",
-    ("meena", "kataka"): "Very High Compatibility",
-}
 
-# Full Nakshatra compatibility data
-NAKSHATRA_COMPATIBILITY = {
-    ("ashwini", "bharani"): "Very Compatible",
-    ("rohini", "mrigashira"): "Very Compatible",
-    ("magha", "purva_phalguni"): "Good Compatibility",
-    ("hasta", "chitra"): "Good Compatibility",
-    ("moola", "uttara_ashadha"): "Moderate Compatibility",
-    ("swati", "vishakha"): "Very High Compatibility",
-    ("chitra", "hasta"): "Strong Compatibility",
-    ("mrigashira", "revati"): "Good Compatibility",
-    ("shravana", "uttara_bhadrapada"): "Excellent Compatibility",
-    ("dhanishta", "shatabhisha"): "Very Compatible",
-    ("uttara_phalguni", "hasta"): "High Compatibility",
-    ("anuradha", "jyestha"): "Good Compatibility",
-    ("purva_bhadrapada", "uttara_bhadrapada"): "Excellent Compatibility",
-}
+# Define the NakshatraMatcher class 
+class NakshatraMatcher:
+    def __init__(self):
+        # Define nakshatra compatibility rules (score 1-3, higher is better)
+        self.compatibility_rules = {
+            "Ashwini": {
+                "Bharani": 3, "Krittika": 2, "Rohini": 1,
+                "Mrigashira": 2, "Ardra": 1, "Punarvasu": 3
+            },
+            "Bharani": {
+                "Krittika": 3, "Rohini": 2, "Mrigashira": 1,
+                "Ardra": 2, "Punarvasu": 3, "Pushya": 1
+            },
+            "Krittika": {
+                "Rohini": 3, "Mrigashira": 2, "Ardra": 1,
+                "Punarvasu": 2, "Pushya": 3, "Ashlesha": 1
+            },
+            "Rohini": {
+                "Mrigashira": 3, "Ardra": 2, "Punarvasu": 1,
+                "Pushya": 2, "Ashlesha": 3, "Magha": 1
+            },
+            "Mrigashira": {
+                "Ardra": 3, "Punarvasu": 2, "Pushya": 1,
+                "Ashlesha": 2, "Magha": 3, "PurvaPhalguni": 1
+            },
+            "Ardra": {
+                "Punarvasu": 3, "Pushya": 2, "Ashlesha": 1,
+                "Magha": 2, "PurvaPhalguni": 3, "UttaraPhalguni": 1
+            },
+            "Punarvasu": {
+                "Pushya": 3, "Ashlesha": 2, "Magha": 1,
+                "PurvaPhalguni": 2, "UttaraPhalguni": 3, "Hasta": 1
+            },
+            "Pushya": {
+                "Ashlesha": 3, "Magha": 2, "PurvaPhalguni": 1,
+                "UttaraPhalguni": 2, "Hasta": 3, "Chitra": 1
+            },
+            "Ashlesha": {
+                "Magha": 3, "PurvaPhalguni": 2, "UttaraPhalguni": 1,
+                "Hasta": 2, "Chitra": 3, "Swati": 1
+            },
+            "Magha": {
+                "PurvaPhalguni": 3, "UttaraPhalguni": 2, "Hasta": 1,
+                "Chitra": 2, "Swati": 3, "Vishakha": 1
+            },
+            "PurvaPhalguni": {
+                "UttaraPhalguni": 3, "Hasta": 2, "Chitra": 1,
+                "Swati": 2, "Vishakha": 3, "Anuradha": 1
+            },
+            "UttaraPhalguni": {
+                "Hasta": 3, "Chitra": 2, "Swati": 1,
+                "Vishakha": 2, "Anuradha": 3, "Jyeshtha": 1
+            },
+            "Hasta": {
+                "Chitra": 3, "Swati": 2, "Vishakha": 1,
+                "Anuradha": 2, "Jyeshtha": 3, "Moola": 1
+            },
+            "Chitra": {
+                "Swati": 3, "Vishakha": 2, "Anuradha": 1,
+                "Jyeshtha": 2, "Moola": 3, "Purvashada": 1
+            },
+            "Swati": {
+                "Vishakha": 3, "Anuradha": 2, "Jyeshtha": 1,
+                "Moola": 2, "Purvashada": 3, "Uttarashada": 1
+            },
+            "Vishakha": {
+                "Anuradha": 3, "Jyeshtha": 2, "Moola": 1,
+                "Purvashada": 2, "Uttarashada": 3, "Shravana": 1
+            },
+            "Anuradha": {
+                "Jyeshtha": 3, "Moola": 2, "Purvashada": 1,
+                "Uttarashada": 2, "Shravana": 3, "Dhanishta": 1
+            },
+            "Jyeshtha": {
+                "Moola": 3, "Purvashada": 2, "Uttarashada": 1,
+                "Shravana": 2, "Dhanishta": 3, "Shatabhisha": 1
+            },
+            "Moola": {
+                "Purvashada": 3, "Uttarashada": 2, "Shravana": 1,
+                "Dhanishta": 2, "Shatabhisha": 3, "Purvabhadra": 1
+            },
+            "Purvashada": {
+                "Uttarashada": 3, "Shravana": 2, "Dhanishta": 1,
+                "Shatabhisha": 2, "Purvabhadra": 3, "Uttarabhadra": 1
+            },
+            "Uttarashada": {
+                "Shravana": 3, "Dhanishta": 2, "Shatabhisha": 1,
+                "Purvabhadra": 2, "Uttarabhadra": 3, "Revati": 1
+            },
+            "Shravana": {
+                "Dhanishta": 3, "Shatabhisha": 2, "Purvabhadra": 1,
+                "Uttarabhadra": 2, "Revati": 3, "Ashwini": 1
+            },
+            "Dhanishta": {
+                "Shatabhisha": 3, "Purvabhadra": 2, "Uttarabhadra": 1,
+                "Revati": 2, "Ashwini": 3, "Bharani": 1
+            },
+            "Shatabhisha": {
+                "Purvabhadra": 3, "Uttarabhadra": 2, "Revati": 1,
+                "Ashwini": 2, "Bharani": 3, "Krittika": 1
+            },
+            "Purvabhadra": {
+                "Uttarabhadra": 3, "Revati": 2, "Ashwini": 1,
+                "Bharani": 2, "Krittika": 3, "Rohini": 1
+            },
+            "Uttarabhadra": {
+                "Revati": 3, "Ashwini": 2, "Bharani": 1,
+                "Krittika": 2, "Rohini": 3, "Mrigashira": 1
+            },
+            "Revati": {
+                "Ashwini": 3, "Bharani": 2, "Krittika": 1,
+                "Rohini": 2, "Mrigashira": 3, "Ardra": 1
+            }
+        }
+        
+        # Define utthamam (excellent) matches - most compatible pairs
+        self.utthamam_matches = {
+            "Ashwini": ["Bharani", "Punarvasu", "Dhanishta"],
+            "Bharani": ["Krittika", "Pushya", "Shatabhisha"],
+            "Krittika": ["Rohini", "Ashlesha", "Purvabhadra"],
+            "Rohini": ["Mrigashira", "Magha", "Uttarabhadra"],
+            "Mrigashira": ["Ardra", "PurvaPhalguni", "Revati"],
+            "Ardra": ["Punarvasu", "UttaraPhalguni", "Ashwini"],
+            "Punarvasu": ["Pushya", "Hasta", "Bharani"],
+            "Pushya": ["Ashlesha", "Chitra", "Krittika"],
+            "Ashlesha": ["Magha", "Swati", "Rohini"],
+            "Magha": ["PurvaPhalguni", "Vishakha", "Mrigashira"],
+            "PurvaPhalguni": ["UttaraPhalguni", "Anuradha", "Ardra"],
+            "UttaraPhalguni": ["Hasta", "Jyeshtha", "Punarvasu"],
+            "Hasta": ["Chitra", "Moola", "Pushya"],
+            "Chitra": ["Swati", "Purvashada", "Ashlesha"],
+            "Swati": ["Vishakha", "Uttarashada", "Magha"],
+            "Vishakha": ["Anuradha", "Shravana", "PurvaPhalguni"],
+            "Anuradha": ["Jyeshtha", "Dhanishta", "UttaraPhalguni"],
+            "Jyeshtha": ["Moola", "Shatabhisha", "Hasta"],
+            "Moola": ["Purvashada", "Purvabhadra", "Chitra"],
+            "Purvashada": ["Uttarashada", "Uttarabhadra", "Swati"],
+            "Uttarashada": ["Shravana", "Revati", "Vishakha"],
+            "Shravana": ["Dhanishta", "Ashwini", "Anuradha"],
+            "Dhanishta": ["Shatabhisha", "Bharani", "Jyeshtha"],
+            "Shatabhisha": ["Purvabhadra", "Krittika", "Moola"],
+            "Purvabhadra": ["Uttarabhadra", "Rohini", "Purvashada"],
+            "Uttarabhadra": ["Revati", "Mrigashira", "Uttarashada"],
+            "Revati": ["Ashwini", "Ardra", "Shravana"]
+        }
+        
+        # Define madhyamam (good) matches - secondary compatible pairs
+        self.madhyamam_matches = {
+            "Ashwini": ["Krittika", "Rohini", "Revati"],
+            "Bharani": ["Rohini", "Mrigashira", "Purvabhadra"],
+            "Krittika": ["Mrigashira", "Ardra", "Uttarabhadra"],
+            "Rohini": ["Ardra", "Punarvasu", "Revati"],
+            "Mrigashira": ["Punarvasu", "Pushya", "Ashwini"],
+            "Ardra": ["Pushya", "Ashlesha", "Bharani"],
+            "Punarvasu": ["Ashlesha", "Magha", "Krittika"],
+            "Pushya": ["Magha", "PurvaPhalguni", "Rohini"],
+            "Ashlesha": ["PurvaPhalguni", "UttaraPhalguni", "Mrigashira"],
+            "Magha": ["UttaraPhalguni", "Hasta", "Ardra"],
+            "PurvaPhalguni": ["Hasta", "Chitra", "Punarvasu"],
+            "UttaraPhalguni": ["Chitra", "Swati", "Pushya"],
+            "Hasta": ["Swati", "Vishakha", "Ashlesha"],
+            "Chitra": ["Vishakha", "Anuradha", "Magha"],
+            "Swati": ["Anuradha", "Jyeshtha", "PurvaPhalguni"],
+            "Vishakha": ["Jyeshtha", "Moola", "UttaraPhalguni"],
+            "Anuradha": ["Moola", "Purvashada", "Hasta"],
+            "Jyeshtha": ["Purvashada", "Uttarashada", "Chitra"],
+            "Moola": ["Uttarashada", "Shravana", "Swati"],
+            "Purvashada": ["Shravana", "Dhanishta", "Vishakha"],
+            "Uttarashada": ["Dhanishta", "Shatabhisha", "Anuradha"],
+            "Shravana": ["Shatabhisha", "Purvabhadra", "Jyeshtha"],
+            "Dhanishta": ["Purvabhadra", "Uttarabhadra", "Moola"],
+            "Shatabhisha": ["Uttarabhadra", "Revati", "Purvashada"],
+            "Purvabhadra": ["Revati", "Ashwini", "Uttarashada"],
+            "Uttarabhadra": ["Ashwini", "Bharani", "Shravana"],
+            "Revati": ["Bharani", "Krittika", "Dhanishta"]
+        }
+
+    def check_compatibility(self, Male_nakshatra: str, Female_nakshatra: str) -> Dict[str, Any]:
+        Male_nakshatra = Male_nakshatra.strip().capitalize()
+        Female_nakshatra = Female_nakshatra.strip().capitalize()
+        
+        # Check for utthamam match
+        is_utthamam = Female_nakshatra in self.utthamam_matches.get(Male_nakshatra, [])
+        
+        # Check for madhyamam match if not utthamam
+        is_madhyamam = False
+        if not is_utthamam:
+            is_madhyamam = Female_nakshatra in self.madhyamam_matches.get(Male_nakshatra, [])
+        
+        # Calculate combined score
+        score = self.compatibility_rules.get(Male_nakshatra, {}).get(Female_nakshatra, 0)
+        
+        return {
+            "is_utthamam": is_utthamam,
+            "is_madhyamam": is_madhyamam,
+            "combined_score": score,
+            "Male_nakshatra": Male_nakshatra,
+            "Female_nakshatra": Female_nakshatra
+        }
+nakshatra_matcher = NakshatraMatcher()
+
 # Initialize the translator
 class S3Handler:
     def __init__(self):
@@ -2870,26 +3037,34 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
-
+        
+# Endpoint to get matrimony preferences
 @app.get("/matrimony/preference")
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
 ):
+    """
+    Get compatible matrimony profiles based on:
+    - Opposite gender
+    - Preferred rashi
+    - Preferred nakshatra
+    - Nakshatra compatibility
+    """
     if is_user_blocked(current_user.get("matrimony_id")):
         raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
 
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
-    def process_s3_url(url, folder_name):
+    def process_s3_url(url: Optional[str], folder_name: str) -> Optional[str]:
         if url and isinstance(url, str):
             if url.startswith("http"):
                 return url
             return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
         return None
 
-    def process_s3_urls(value, folder_name):
+    def process_s3_urls(value: Any, folder_name: str) -> Optional[List[str]]:
         if not value:
             return None
         if isinstance(value, str):
@@ -2907,9 +3082,11 @@ async def get_matrimony_preferences(
         ]
 
     try:
-        # Fetch current user's profile
+        # Fetch current user's profile with all relevant fields
         cur.execute("""
-            SELECT matrimony_id, full_name, gender, preferred_rashi, nakshatra
+            SELECT matrimony_id, full_name, gender, preferred_rashi, preferred_nakshatra, nakshatra,
+                   preferred_age_min, preferred_age_max, preferred_height_min, preferred_height_max,
+                   preferred_religion, preferred_caste, preferred_sub_caste
             FROM matrimony_profiles 
             WHERE matrimony_id = %s
         """, [current_user.get("matrimony_id")])
@@ -2918,12 +3095,13 @@ async def get_matrimony_preferences(
         if not user_profile:
             raise HTTPException(status_code=404, detail="User profile not found")
 
-        user_gender = user_profile['gender'].strip()
-        opposite_gender = "Male" if user_gender.lower() == "female" else "Female"
+        user_gender = user_profile['gender'].strip().lower()
+        opposite_gender = "female" if user_gender == "male" else "male"
 
+        # Base query for finding compatible profiles
         query = """
             SELECT * FROM matrimony_profiles
-            WHERE gender ILIKE %s
+            WHERE LOWER(gender) = %s
             AND matrimony_id != %s
             AND is_active = TRUE
             AND is_verified = true
@@ -2936,6 +3114,7 @@ async def get_matrimony_preferences(
         """
         params = [opposite_gender, user_profile['matrimony_id'], current_user['matrimony_id']]
 
+        # Add rashi filter if preferred_rashi exists
         if user_profile['preferred_rashi']:
             preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
             if preferred_rashi_list:
@@ -2947,55 +3126,72 @@ async def get_matrimony_preferences(
                     query += " AND LOWER(rashi) = ANY(%s)"
                     params.append([r.lower() for r in preferred_rashi_list])
 
+        # Add nakshatra filter if preferred_nakshatra exists
+        if user_profile.get('preferred_nakshatra'):
+            preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
+            if preferred_nakshatra_list:
+                query += " AND nakshatra IS NOT NULL"
+                if case_sensitive:
+                    query += " AND nakshatra = ANY(%s)"
+                    params.append(preferred_nakshatra_list)
+                else:
+                    query += " AND LOWER(nakshatra) = ANY(%s)"
+                    params.append([n.lower() for n in preferred_nakshatra_list])
+
+        # Debug: Print the query and params
+        print("Final Query:", query)
+        print("Query Params:", params)
+
         cur.execute(query, params)
         profiles = cur.fetchall()
+
+        # Debug: Print raw profiles before filtering
+        print("Raw profiles found:", len(profiles))
+        for p in profiles:
+            print(f"Profile ID: {p['matrimony_id']}, Gender: {p['gender']}, Rashi: {p.get('rashi')}, Nakshatra: {p.get('nakshatra')}")
 
         compatible_profiles = []
         for profile in profiles:
             profile_dict = dict(profile)
+            
+            # Process S3 URLs
             profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
+            # Format dates and times
             if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                 profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
 
             if isinstance(profile_dict.get("birth_time"), time):
                 profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
+            # Calculate age
             if profile_dict.get("date_of_birth"):
                 dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
                 today = datetime.today()
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
-            # --- NAKSHATRA COMPATIBILITY CHECK ---
-            boy_star = user_profile['nakshatra']
-            # boy_padham = user_profile.get('nakshatra_padham')
-            girl_star = profile.get('nakshatra')
-            # girl_padham = profile.get('nakshatra_padham')
+            # Nakshatra compatibility check - modified to be informational only
+            Male_star = user_profile['nakshatra']
+            Female_star = profile.get('nakshatra')
 
-            if not boy_star or not girl_star:
-                continue  # skip if either is missing
+            match_result = None
+            if Male_star and Female_star:
+                if user_gender == "male":
+                    match_result = nakshatra_matcher.check_compatibility(Male_star, Female_star)
+                else:
+                    match_result = nakshatra_matcher.check_compatibility(Female_star, Male_star)
 
-            if user_gender.lower() == "male":
-                match_result = nakshatra_matcher.check_compatibility(
-                    boy_star, girl_star
-                )
+            # Add match info to profile regardless of compatibility
+            if match_result:
+                profile_dict['nakshatra_match_score'] = match_result.get('combined_score', 0)
+                profile_dict['nakshatra_match_type'] = 'Utthamam' if match_result.get('is_utthamam') else 'Madhyamam' if match_result.get('is_madhyamam') else 'Not Compatible'
             else:
-                match_result = nakshatra_matcher.check_compatibility(
-                    girl_star, boy_star
-                )
+                profile_dict['nakshatra_match_score'] = 0
+                profile_dict['nakshatra_match_type'] = 'Unknown'
 
-            if not match_result or not (match_result['is_utthamam'] or match_result['is_madhyamam']):
-                continue  # skip incompatible matches
-
-            # Append optional match info
-            profile_dict['nakshatra_match_score'] = match_result['combined_score']
-            profile_dict['nakshatra_match_type'] = (
-                'Utthamam' if match_result['is_utthamam'] else 'Madhyamam'
-            )
-
-            compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
+            compatible_profiles.append(profile_dict)
 
         return {
             "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found",
@@ -3009,13 +3205,21 @@ async def get_matrimony_preferences(
     finally:
         cur.close()
         conn.close()
+        
 
-# In Admin POV: get Method matrimony/preference updated --
+# In Admin POV: get Method matrimony/preference updated -----------------
 @app.get("/matrimony/admin/preference", response_model=List[Dict[str, Any]])
-async def get_matrimony_preferences(
+async def get_matrimony_preferences_admin(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
-    case_sensitive: Optional[bool] = Query(default=False)
+    case_sensitive: Optional[bool] = Query(default=False),
+    include_inactive: Optional[bool] = Query(default=False)
 ):
+    """
+    Admin view of all matrimony preferences and compatible profiles
+    - Shows all users and their compatible matches
+    - Can include inactive profiles (admin-only feature)
+    - Shows nakshatra compatibility information
+    """
     if is_user_blocked(current_user.get("matrimony_id")):
         raise HTTPException(status_code=403, detail="Access denied. You have been blocked by admin.")
 
@@ -3044,19 +3248,15 @@ async def get_matrimony_preferences(
             for item in items
         ]
 
-    def fetch_compatible_profiles(user_profile):
+    def get_compatible_profiles(user_profile):
         try:
-            if not user_profile:
-                raise ValueError("Empty user profile passed")
-
-            gender = user_profile['gender'].strip()
-            opposite_gender = "Male" if gender.lower() == "female" else "Female"
+            user_gender = user_profile['gender'].strip().lower()
+            opposite_gender = "female" if user_gender == "male" else "male"
 
             query = """
                 SELECT * FROM matrimony_profiles
-                WHERE gender ILIKE %s
+                WHERE LOWER(gender) = %s
                 AND matrimony_id != %s
-                AND is_active = TRUE
                 AND is_verified = true
                 AND verification_status = 'approve'
                 AND matrimony_id NOT IN (
@@ -3067,6 +3267,7 @@ async def get_matrimony_preferences(
             """
             params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
 
+            # Add rashi filter if preferred_rashi exists
             if user_profile.get('preferred_rashi'):
                 preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
                 if preferred_rashi_list:
@@ -3078,6 +3279,18 @@ async def get_matrimony_preferences(
                         query += " AND LOWER(rashi) = ANY(%s)"
                         params.append([r.lower() for r in preferred_rashi_list])
 
+            # Add nakshatra filter if preferred_nakshatra exists
+            if user_profile.get('preferred_nakshatra'):
+                preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
+                if preferred_nakshatra_list:
+                    query += " AND nakshatra IS NOT NULL"
+                    if case_sensitive:
+                        query += " AND nakshatra = ANY(%s)"
+                        params.append(preferred_nakshatra_list)
+                    else:
+                        query += " AND LOWER(nakshatra) = ANY(%s)"
+                        params.append([n.lower() for n in preferred_nakshatra_list])
+
             cur.execute(query, params)
             results = cur.fetchall()
 
@@ -3085,80 +3298,101 @@ async def get_matrimony_preferences(
             for profile in results:
                 profile_dict = dict(profile)
                 profile_dict.pop("password", None)
+                
+                # Process S3 URLs
                 profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
                 profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
                 profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
-                # Date formatting
+                # Format dates
                 if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                     profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
-
                 if isinstance(profile_dict.get("birth_time"), time):
                     profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
-                # Calculate age if not present
+                # Calculate age
                 if profile_dict.get("date_of_birth"):
                     dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
                     today = datetime.today()
-                    profile_dict["age"] = str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
+                    profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
-                try:
-                    profile_model = MatrimonyProfileResponse(**profile_dict)
-                    compatible_profiles.append(profile_model.dict())
-                except Exception as e:
-                    print("Validation error:", e)
-                    print("Bad profile data:", profile_dict)
+                # Nakshatra compatibility check
+                Male_star = user_profile.get('nakshatra')
+                Female_star = profile_dict.get('nakshatra')
 
-            # Format user profile cleanly
-            formatted_user_profile = dict(user_profile)
-            formatted_user_profile.pop("password", None)
-            if isinstance(formatted_user_profile.get("date_of_birth"), (datetime, date)):
-                formatted_user_profile["date_of_birth"] = formatted_user_profile["date_of_birth"].strftime('%Y-%m-%d')
-            if isinstance(formatted_user_profile.get("birth_time"), time):
-                formatted_user_profile["birth_time"] = formatted_user_profile["birth_time"].strftime('%H:%M:%S')
+                match_result = None
+                if Male_star and Female_star:
+                    if user_gender == "male":
+                        match_result = nakshatra_matcher.check_compatibility(Male_star, Female_star)
+                    else:
+                        match_result = nakshatra_matcher.check_compatibility(Female_star, Male_star)
 
-            return {
-                "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found. Your profile details are below.",
-                "user_profile": formatted_user_profile,
-                "profile_details": compatible_profiles
-            }
+                # Add compatibility info
+                if match_result:
+                    profile_dict['nakshatra_match_score'] = match_result.get('combined_score', 0)
+                    profile_dict['nakshatra_match_type'] = (
+                        'Utthamam' if match_result.get('is_utthamam') 
+                        else 'Madhyamam' if match_result.get('is_madhyamam') 
+                        else 'Not Compatible'
+                    )
+                else:
+                    profile_dict['nakshatra_match_score'] = 0
+                    profile_dict['nakshatra_match_type'] = 'Unknown'
+
+                compatible_profiles.append(profile_dict)
+
+            return compatible_profiles
 
         except Exception as e:
-            print(f"Error for user {user_profile.get('matrimony_id', 'UNKNOWN')}: {e}")
-            traceback.print_exc()
-            return {
-                "message": f"{user_profile.get('full_name', 'Unknown')} ({user_profile.get('matrimony_id', 'N/A')}), profile error occurred",
-                "user_profile": user_profile,
-                "profile_details": []
-            }
+            print(f"Error processing compatible profiles for {user_profile.get('matrimony_id')}: {e}")
+            return []
 
     try:
-        # 🔥 Fetch full profile instead of partial fields
-        cur.execute("SELECT * FROM matrimony_profiles WHERE is_active = TRUE")
+        # Fetch all active users (or all users if include_inactive is True)
+        query = "SELECT * FROM matrimony_profiles"
+        if not include_inactive:
+            query += " WHERE is_active = TRUE"
+        
+        cur.execute(query)
         all_users = cur.fetchall()
 
         response_data = []
         for user in all_users:
-            try:
-                print(f"Processing user: {user['matrimony_id']}")
-                result = fetch_compatible_profiles(user)
-                response_data.append(result)
-            except Exception as inner_e:
-                print(f"Skipping user {user['matrimony_id']}: {inner_e}")
-                traceback.print_exc()
-                continue
+            user_dict = dict(user)
+            user_dict.pop("password", None)
+            
+            # Format user profile
+            if isinstance(user_dict.get("date_of_birth"), (datetime, date)):
+                user_dict["date_of_birth"] = user_dict["date_of_birth"].strftime('%Y-%m-%d')
+            if isinstance(user_dict.get("birth_time"), time):
+                user_dict["birth_time"] = user_dict["birth_time"].strftime('%H:%M:%S')
+            
+            # Calculate age for user
+            if user_dict.get("date_of_birth"):
+                dob = datetime.strptime(user_dict["date_of_birth"], '%Y-%m-%d')
+                today = datetime.today()
+                user_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+            compatible_profiles = get_compatible_profiles(user)
+            
+            response_data.append({
+                "user_profile": user_dict,
+                "profiles": compatible_profiles,
+                "compatible_count": len(compatible_profiles),
+                "last_updated": datetime.now().isoformat()
+            })
 
         return response_data
 
     except Exception as e:
-        print("Exception occurred at top level:", e)
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Admin endpoint error: {e}")
+        raise HTTPException(status_code=500, detail="Error processing admin request")
 
     finally:
         cur.close()
         conn.close()
-    
+
+# Endpoint to get matrimony profiles based on location preference    
 @app.get("/matrimony/location-preference", response_model=MatrimonyProfilesWithMessage)
 async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
