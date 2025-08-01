@@ -4446,9 +4446,9 @@ async def recharge_wallet(
     if not matrimony_id:
         raise HTTPException(status_code=400, detail="Matrimony ID is required for recharge")
     
-    rate_chart = {200: 1000, 500: 3000, 1000: 7000}
+    rate_chart = {100: 500, 200: 1000, 500: 3000, 1000: 7000}
     if amount not in rate_chart:
-        raise HTTPException(status_code=400, detail="Invalid recharge amount. Allowed: 200, 500, 1000")
+        raise HTTPException(status_code=400, detail="Invalid recharge amount. Allowed: 100, 200, 500, 1000")
 
     points = rate_chart[amount]
 
