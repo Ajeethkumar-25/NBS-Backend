@@ -5866,7 +5866,6 @@ async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_
 
             return {
                 "message": "Fetched your approved profile successfully",
-                "pending_count": 0,
                 "approved_count": approved_count,
                 "profiles": profiles
             }
