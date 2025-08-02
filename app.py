@@ -394,7 +394,7 @@ class MatrimonyProfilesWithMessage(BaseModel):
 
 class AdminProfileVerificationSummary(BaseModel):
     message: str
-    pending_count: int
+    reject_count: int
     approved_count: int
     profiles: List[MatrimonyProfileResponse]
 
@@ -1011,7 +1011,7 @@ def save_upload_file(file: UploadFile, folder: str) -> str:
         upload_dir = f'uploads/{folder}'
         os.makedirs(upload_dir, exist_ok=True)
 
-        # Avoid overwriting by appending a unique identifier
+        # Avoid overwriting by apreject a unique identifier
         filename = f"{file.filename}"
         file_location = os.path.join(upload_dir, filename)
 
@@ -5817,19 +5817,19 @@ async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_
 
     try:
         if current_user["user_type"] == "admin":
-            # Admin: fetch all pending profiles
-            cur.execute("SELECT * FROM matrimony_profiles WHERE verification_status = 'pending'")
+            # Admin: fetch all reject profiles
+            cur.execute("SELECT * FROM matrimony_profiles WHERE verification_status = 'reject'")
             profiles = cur.fetchall()
 
             cur.execute("""
                 SELECT verification_status, COUNT(*) as count
                 FROM matrimony_profiles
-                WHERE verification_status IN ('pending', 'approved')
+                WHERE verification_status IN ('reject', 'approved')
                 GROUP BY verification_status
             """)
             status_counts = cur.fetchall()
         else:
-            # User: fetch their own profile (pending or approved)
+            # User: fetch their own profile (reject or approved)
             cur.execute("""
                 SELECT * FROM matrimony_profiles
                 WHERE matrimony_id = %s
@@ -5838,27 +5838,27 @@ async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_
             profiles = [profile] if profile else []
 
             # Count based on their own profile status
-            pending_count = 1 if profile and profile["verification_status"] == "pending" else 0
+            reject_count = 1 if profile and profile["verification_status"] == "rejected" else 0
             approved_count = 1 if profile and profile["verification_status"] == "approve" else 0
             return {
                 "message": "Fetched your profile verification data successfully",
-                "pending_count": pending_count,
+                "rejected_count": reject_count,
                 "approved_count": approved_count,
                 "profiles": profiles
             }
 
         # Admin count aggregation
-        pending_count = 0
+        reject_count = 0
         approved_count = 0
         for row in status_counts:
-            if row["verification_status"] == "pending":
-                pending_count = row["count"]
+            if row["verification_status"] == "reject":
+                reject_count = row["count"]
             elif row["verification_status"] == "approve":
                 approved_count = row["count"]
 
         return {
             "message": "Fetched verification data successfully",
-            "pending_count": pending_count,
+            "Rejected_count": reject_count,
             "approved_count": approved_count,
             "profiles": profiles
         }
