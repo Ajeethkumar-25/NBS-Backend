@@ -4,7 +4,7 @@ import tempfile
 import bcrypt
 import re
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Query, Form, Body, Request
-from typing import Optional
+from typing import Optional, Literal
 from fastapi.security import OAuth2PasswordBearer
 # from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -397,6 +397,11 @@ class AdminProfileVerificationSummary(BaseModel):
     reject_count: int
     approved_count: int
     profiles: List[MatrimonyProfileResponse]
+
+class ProfileVerificationUpdate(BaseModel):
+    matrimony_id: str
+    verification_status: Literal["approve", "reject"]
+    verification_comment: Optional[str] = None
 
 class OTPRequest(BaseModel):
     mobile_number: str
@@ -5817,19 +5822,37 @@ async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_
 
     try:
         if current_user["user_type"] == "admin":
-            # Admin: fetch all reject profiles
-            cur.execute("SELECT * FROM matrimony_profiles WHERE verification_status = 'reject'")
+            # ✅ Fetch only approved profiles for admin display
+            cur.execute("SELECT * FROM matrimony_profiles WHERE verification_status = 'approve'")
             profiles = cur.fetchall()
 
+            # ✅ Count both approve and reject
             cur.execute("""
                 SELECT verification_status, COUNT(*) as count
                 FROM matrimony_profiles
-                WHERE verification_status IN ('reject', 'approved')
+                WHERE verification_status IN ('approve', 'reject')
                 GROUP BY verification_status
             """)
             status_counts = cur.fetchall()
+
+            # ✅ Aggregate counts
+            reject_count = 0
+            approved_count = 0
+            for row in status_counts:
+                if row["verification_status"] == "reject":
+                    reject_count = row["count"]
+                elif row["verification_status"] == "approve":
+                    approved_count = row["count"]
+
+            return {
+                "message": "Fetched verification data successfully",
+                "reject_count": reject_count,
+                "approved_count": approved_count,
+                "profiles": profiles  # only approved profiles
+            }
+
         else:
-            # User: fetch their own profile (reject or approved)
+            # ✅ User: only their own profile (unchanged)
             cur.execute("""
                 SELECT * FROM matrimony_profiles
                 WHERE matrimony_id = %s
@@ -5837,35 +5860,65 @@ async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_
             profile = cur.fetchone()
             profiles = [profile] if profile else []
 
-            # Count based on their own profile status
-            reject_count = 1 if profile and profile["verification_status"] == "rejected" else 0
+            reject_count = 1 if profile and profile["verification_status"] == "reject" else 0
             approved_count = 1 if profile and profile["verification_status"] == "approve" else 0
+
             return {
                 "message": "Fetched your profile verification data successfully",
-                "rejected_count": reject_count,
+                "reject_count": reject_count,
                 "approved_count": approved_count,
                 "profiles": profiles
             }
 
-        # Admin count aggregation
-        reject_count = 0
-        approved_count = 0
-        for row in status_counts:
-            if row["verification_status"] == "reject":
-                reject_count = row["count"]
-            elif row["verification_status"] == "approve":
-                approved_count = row["count"]
-
-        return {
-            "message": "Fetched verification data successfully",
-            "Rejected_count": reject_count,
-            "approved_count": approved_count,
-            "profiles": profiles
-        }
-
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Error fetching verification profiles")
+
+    finally:
+        cur.close()
+        conn.close()
+# ------------------- Update Profile Verification Status -------------------
+@app.put("/admin/profiles/verify")
+async def verify_profile(
+    matrimony_id: str = Form(...),
+    verification_status: Literal["approve", "reject"] = Form(...),
+    verification_comment: Optional[str] = Form(None),
+    current_user: Dict = Depends(get_current_user_matrimony)
+):
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can perform this action")
+
+    conn = psycopg2.connect(**settings.DB_CONFIG)
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            UPDATE matrimony_profiles
+            SET verification_status = %s,
+                verification_comment = %s,
+                is_verified = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE matrimony_id = %s
+            """,
+            (
+                verification_status,
+                verification_comment,
+                True if verification_status == "approve" else False,
+                matrimony_id,
+            )
+        )
+
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        conn.commit()
+
+        return {"message": f"Profile {verification_status}d successfully"}
+
+    except Exception as e:
+        print(f"Error verifying profile: {e}")
+        raise HTTPException(status_code=500, detail="Error updating verification status")
 
     finally:
         cur.close()
