@@ -394,13 +394,13 @@ class MatrimonyProfilesWithMessage(BaseModel):
 
 class AdminProfileVerificationSummary(BaseModel):
     message: str
-    reject_count: int
+    pending_count: int
     approved_count: int
     profiles: List[MatrimonyProfileResponse]
 
 class ProfileVerificationUpdate(BaseModel):
     matrimony_id: str
-    verification_status: Literal["approve", "reject"]
+    verification_status: Literal["approve", "pending"]
     verification_comment: Optional[str] = None
 
 class OTPRequest(BaseModel):
@@ -1016,7 +1016,7 @@ def save_upload_file(file: UploadFile, folder: str) -> str:
         upload_dir = f'uploads/{folder}'
         os.makedirs(upload_dir, exist_ok=True)
 
-        # Avoid overwriting by apreject a unique identifier
+        # Avoid overwriting by appending a unique identifier
         filename = f"{file.filename}"
         file_location = os.path.join(upload_dir, filename)
 
@@ -5783,14 +5783,14 @@ def get_dashboard_overview(
 @app.post("/admin/profile/verify")
 async def verify_profile(
     matrimony_id: str = Form(...),
-    action: str = Form(...),  # values: "approve", "reject"
+    action: str = Form(...),  # values: "approve", "pending"
     comment: str = Form(None),
     admin: dict = Depends(get_current_user_matrimony)
 ):
     if admin["user_type"] != "admin":
         raise HTTPException(status_code=403, detail="Admin access only")
 
-    if action not in ["approve", "reject"]:
+    if action not in ["approve", "pending"]:
         raise HTTPException(status_code=400, detail="Invalid action")
 
     conn = psycopg2.connect(**settings.DB_CONFIG)
@@ -5812,60 +5812,61 @@ async def verify_profile(
     cur.close()
     conn.close()
 
-    return {"message": f"Profile {'approved' if action == 'approve' else 'rejected'} successfully"}
+    return {"message": f"Profile {'approved' if action == 'approve' else 'pendinged'} successfully"}
 
 # ------------------- Get Unverified Profiles ------------------- 
-@app.get("/admin/profiles/unverified", response_model=AdminProfileVerificationSummary)
+@app.get("/profiles/unverified", response_model=AdminProfileVerificationSummary)
 async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_matrimony)):
     conn = psycopg2.connect(**settings.DB_CONFIG)
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         if current_user["user_type"] == "admin":
-            # ✅ Fetch only approved profiles for admin display
-            cur.execute("SELECT * FROM matrimony_profiles WHERE verification_status = 'approve'")
+            # ✅ Admin: Fetch both approved and pending profiles
+            cur.execute("""
+                SELECT * FROM matrimony_profiles
+                WHERE verification_status IN ('approve', 'pending')
+            """)
             profiles = cur.fetchall()
 
-            # ✅ Count both approve and reject
+            # ✅ Count both approve and pending
             cur.execute("""
                 SELECT verification_status, COUNT(*) as count
                 FROM matrimony_profiles
-                WHERE verification_status IN ('approve', 'reject')
+                WHERE verification_status IN ('approve', 'pending')
                 GROUP BY verification_status
             """)
             status_counts = cur.fetchall()
 
-            # ✅ Aggregate counts
-            reject_count = 0
+            pending_count = 0
             approved_count = 0
             for row in status_counts:
-                if row["verification_status"] == "reject":
-                    reject_count = row["count"]
+                if row["verification_status"] == "pending":
+                    pending_count = row["count"]
                 elif row["verification_status"] == "approve":
                     approved_count = row["count"]
 
             return {
                 "message": "Fetched verification data successfully",
-                "reject_count": reject_count,
+                "pending_count": pending_count,
                 "approved_count": approved_count,
-                "profiles": profiles  # only approved profiles
+                "profiles": profiles
             }
 
         else:
-            # ✅ User: only their own profile (unchanged)
+            # ✅ User: Only show their own profile if it's approved
             cur.execute("""
                 SELECT * FROM matrimony_profiles
-                WHERE matrimony_id = %s
+                WHERE matrimony_id = %s AND verification_status = 'approve'
             """, [current_user["matrimony_id"]])
             profile = cur.fetchone()
             profiles = [profile] if profile else []
 
-            reject_count = 1 if profile and profile["verification_status"] == "reject" else 0
-            approved_count = 1 if profile and profile["verification_status"] == "approve" else 0
+            approved_count = 1 if profile else 0
 
             return {
-                "message": "Fetched your profile verification data successfully",
-                "reject_count": reject_count,
+                "message": "Fetched your approved profile successfully",
+                "pending_count": 0,
                 "approved_count": approved_count,
                 "profiles": profiles
             }
@@ -5877,11 +5878,13 @@ async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_
     finally:
         cur.close()
         conn.close()
+
 # ------------------- Update Profile Verification Status -------------------
+
 @app.put("/admin/profiles/verify")
 async def verify_profile(
     matrimony_id: str = Form(...),
-    verification_status: Literal["approve", "reject"] = Form(...),
+    verification_status: Literal["approve", "pending"] = Form(...),
     verification_comment: Optional[str] = Form(None),
     current_user: Dict = Depends(get_current_user_matrimony)
 ):
@@ -5889,9 +5892,17 @@ async def verify_profile(
         raise HTTPException(status_code=403, detail="Only admin can perform this action")
 
     conn = psycopg2.connect(**settings.DB_CONFIG)
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
+        # ✅ Check if profile exists
+        cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (matrimony_id,))
+        profile = cur.fetchone()
+
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        # ✅ Perform update
         cur.execute(
             """
             UPDATE matrimony_profiles
@@ -5909,12 +5920,13 @@ async def verify_profile(
             )
         )
 
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Profile not found")
-
         conn.commit()
 
-        return {"message": f"Profile {verification_status}d successfully"}
+        return {
+            "message": f"Profile verification status updated to '{verification_status}' successfully",
+            "matrimony_id": matrimony_id,
+            "new_status": verification_status
+        }
 
     except Exception as e:
         print(f"Error verifying profile: {e}")
@@ -5923,7 +5935,6 @@ async def verify_profile(
     finally:
         cur.close()
         conn.close()
-
 
 # Run the application
 if __name__ == "__main__":
