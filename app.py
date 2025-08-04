@@ -37,6 +37,7 @@ from twilio.rest import Client
 from dotenv import load_dotenv
 import traceback
 from astrology_terms import ASTROLOGY_TERMS
+from collections import defaultdict
 
 
 # Twilio credentials (hardcoded)
@@ -3054,8 +3055,9 @@ async def get_matrimony_preferences(
     - Opposite gender
     - Preferred rashi
     - Preferred nakshatra
-    - Nakshatra compatibility
+    - Nakshatra compatibility (Utthamam/Madhyamam)
     """
+
     if is_user_blocked(current_user.get("matrimony_id")):
         raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
 
@@ -3087,7 +3089,7 @@ async def get_matrimony_preferences(
         ]
 
     try:
-        # Fetch current user's profile with all relevant fields
+        # Fetch user profile
         cur.execute("""
             SELECT matrimony_id, full_name, gender, preferred_rashi, preferred_nakshatra, nakshatra,
                    preferred_age_min, preferred_age_max, preferred_height_min, preferred_height_max,
@@ -3103,7 +3105,6 @@ async def get_matrimony_preferences(
         user_gender = user_profile['gender'].strip().lower()
         opposite_gender = "female" if user_gender == "male" else "male"
 
-        # Base query for finding compatible profiles
         query = """
             SELECT * FROM matrimony_profiles
             WHERE LOWER(gender) = %s
@@ -3119,7 +3120,6 @@ async def get_matrimony_preferences(
         """
         params = [opposite_gender, user_profile['matrimony_id'], current_user['matrimony_id']]
 
-        # Add rashi filter if preferred_rashi exists
         if user_profile['preferred_rashi']:
             preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
             if preferred_rashi_list:
@@ -3131,7 +3131,6 @@ async def get_matrimony_preferences(
                     query += " AND LOWER(rashi) = ANY(%s)"
                     params.append([r.lower() for r in preferred_rashi_list])
 
-        # Add nakshatra filter if preferred_nakshatra exists
         if user_profile.get('preferred_nakshatra'):
             preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
             if preferred_nakshatra_list:
@@ -3143,41 +3142,28 @@ async def get_matrimony_preferences(
                     query += " AND LOWER(nakshatra) = ANY(%s)"
                     params.append([n.lower() for n in preferred_nakshatra_list])
 
-        # Debug: Print the query and params
-        print("Final Query:", query)
-        print("Query Params:", params)
-
         cur.execute(query, params)
         profiles = cur.fetchall()
-
-        # Debug: Print raw profiles before filtering
-        print("Raw profiles found:", len(profiles))
-        for p in profiles:
-            print(f"Profile ID: {p['matrimony_id']}, Gender: {p['gender']}, Rashi: {p.get('rashi')}, Nakshatra: {p.get('nakshatra')}")
 
         compatible_profiles = []
         for profile in profiles:
             profile_dict = dict(profile)
-            
-            # Process S3 URLs
+
             profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
-            # Format dates and times
             if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                 profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
 
             if isinstance(profile_dict.get("birth_time"), time):
                 profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
-            # Calculate age
             if profile_dict.get("date_of_birth"):
                 dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
                 today = datetime.today()
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
 
-            # Nakshatra compatibility check - modified to be informational only
             Male_star = user_profile['nakshatra']
             Female_star = profile.get('nakshatra')
 
@@ -3188,7 +3174,6 @@ async def get_matrimony_preferences(
                 else:
                     match_result = nakshatra_matcher.check_compatibility(Female_star, Male_star)
 
-            # Add match info to profile regardless of compatibility
             if match_result:
                 profile_dict['nakshatra_match_score'] = match_result.get('combined_score', 0)
                 profile_dict['nakshatra_match_type'] = 'Utthamam' if match_result.get('is_utthamam') else 'Madhyamam' if match_result.get('is_madhyamam') else 'Not Compatible'
@@ -3198,9 +3183,13 @@ async def get_matrimony_preferences(
 
             compatible_profiles.append(profile_dict)
 
+        # Filter utthamam matches
+        utthamam_matches = [p for p in compatible_profiles if p.get('nakshatra_match_type') == 'Utthamam']
+
         return {
             "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found",
-            "profiles": compatible_profiles
+            "profiles": compatible_profiles,
+            "matching_profiles": utthamam_matches
         }
 
     except Exception as e:
@@ -3210,7 +3199,7 @@ async def get_matrimony_preferences(
     finally:
         cur.close()
         conn.close()
-        
+
 
 # In Admin POV: get Method matrimony/preference updated -----------------
 @app.get("/matrimony/admin/preference", response_model=List[Dict[str, Any]])
@@ -5656,7 +5645,6 @@ def get_all_contacts(
             conn.close()
 
 # Dashboard Creation
-from collections import defaultdict
 
 @app.get("/matrimony/admin/dashboards/overview")
 def get_dashboard_overview(
@@ -5784,10 +5772,10 @@ def get_dashboard_overview(
 async def verify_profile(
     matrimony_id: str = Form(...),
     action: str = Form(...),  # values: "approve", "pending"
-    comment: str = Form(None),
-    admin: dict = Depends(get_current_user_matrimony)
+    comment: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user_matrimony)
 ):
-    if admin["user_type"] != "admin":
+    if current_user.get["user_type"] != "admin":
         raise HTTPException(status_code=403, detail="Admin access only")
 
     if action not in ["approve", "pending"]:
