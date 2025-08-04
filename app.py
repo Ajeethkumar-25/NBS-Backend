@@ -3134,26 +3134,25 @@ async def get_matrimony_preferences(
         """
         params = [opposite_gender, user_profile['matrimony_id'], current_user['matrimony_id']]
 
+        # -- Optional filters based on user preferences --
         if user_profile['preferred_rashi']:
             preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
             if preferred_rashi_list:
-                query += " AND rashi IS NOT NULL"
                 if case_sensitive:
-                    query += " AND rashi = ANY(%s)"
+                    query += " AND (rashi IS NOT NULL AND rashi = ANY(%s))"
                     params.append(preferred_rashi_list)
                 else:
-                    query += " AND LOWER(rashi) = ANY(%s)"
+                    query += " AND (rashi IS NOT NULL AND LOWER(rashi) = ANY(%s))"
                     params.append([r.lower() for r in preferred_rashi_list])
 
         if user_profile.get('preferred_nakshatra'):
             preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
             if preferred_nakshatra_list:
-                query += " AND nakshatra IS NOT NULL"
                 if case_sensitive:
-                    query += " AND nakshatra = ANY(%s)"
+                    query += " AND (nakshatra IS NOT NULL AND nakshatra = ANY(%s))"
                     params.append(preferred_nakshatra_list)
                 else:
-                    query += " AND LOWER(nakshatra) = ANY(%s)"
+                    query += " AND (nakshatra IS NOT NULL AND LOWER(nakshatra) = ANY(%s))"
                     params.append([n.lower() for n in preferred_nakshatra_list])
 
         cur.execute(query, params)
@@ -4212,16 +4211,14 @@ async def update_matrimony_profile(
     try:
         user_type = current_user.get("user_type")
 
-        # Determine matrimony_id
-        if user_type == "admin":
-            if not matrimony_id:
-                raise HTTPException(status_code=400, detail="Admin must provide matrimony_id in form-data to update a profile")
-        elif user_type == "user":
-            matrimony_id = current_user.get("matrimony_id")
-            if not matrimony_id:
-                raise HTTPException(status_code=401, detail="Unauthorized user access")
-        else:
-            raise HTTPException(status_code=403, detail="Invalid user type")
+        # Only allow user-type access
+        if user_type != "user":
+            raise HTTPException(status_code=403, detail="Only user access is allowed")
+
+        # Extract matrimony_id from the logged-in user
+        matrimony_id = current_user.get("matrimony_id")
+        if not matrimony_id:
+            raise HTTPException(status_code=401, detail="Unauthorized user access: missing matrimony_id")
 
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
