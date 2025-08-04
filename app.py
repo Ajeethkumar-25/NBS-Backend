@@ -386,7 +386,7 @@ class MatrimonyProfileResponse(BaseModel):
     blood_group: Optional[str]
     is_verified:  Optional[str]
     verification_status: Optional[str] 
-    verification_comment: Optional[str] 
+    verification_verification_comment: Optional[str] 
 
 class MatrimonyProfilesWithMessage(BaseModel):
     message: str
@@ -402,7 +402,7 @@ class AdminProfileVerificationSummary(BaseModel):
 class ProfileVerificationUpdate(BaseModel):
     matrimony_id: str
     verification_status: Literal["approve", "pending"]
-    verification_comment: Optional[str] = None
+    verification_verification_comment: Optional[str] = None
 
 class OTPRequest(BaseModel):
     mobile_number: str
@@ -1097,6 +1097,20 @@ async def get_current_user_matrimony(token: str = Depends(oauth2_scheme)) -> Dic
             cur.close()
         if 'conn' in locals():
             conn.close()
+
+            # Debug individual token parts
+            parts = token.split(".")
+            if len(parts) != 3:
+                raise HTTPException(status_code=401, detail="Malformed JWT token")
+
+            # Try base64 decoding to see which part fails
+            try:
+                print("Header:", base64.urlsafe_b64decode(parts[0] + '=='))
+                print("Payload:", base64.urlsafe_b64decode(parts[1] + '=='))
+            except Exception as e:
+                print("Base64 decode error:", e)
+                raise HTTPException(status_code=401, detail="Malformed token content")
+
 
 def send_push_notification(token: str, title: str, body: str):
     """
@@ -4091,7 +4105,7 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
         FROM 
             matrimony_profiles mp
         LEFT JOIN 
-            spend_actions sa 
+            spend_verification_statuss sa 
         ON 
             mp.matrimony_id = sa.matrimony_id
         WHERE 
@@ -4692,7 +4706,7 @@ async def recharge_wallet(
         """, (matrimony_id, points, points))
 
         cur.execute("""
-            INSERT INTO point_transactions (matrimony_id, transaction_type, points, amount)
+            INSERT INTO point_transverification_statuss (matrimony_id, transverification_status_type, points, amount)
             VALUES (%s, 'recharge', %s, %s)
         """, (matrimony_id, points, amount))
 
@@ -4760,9 +4774,9 @@ async def spend_points_from_user_wallet(
 
                 full_name = profile_row[0]
 
-                # Insert transaction (no reference_id)
+                # Insert transverification_status (no reference_id)
                 cur.execute("""
-                    INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
+                    INSERT INTO spend_verification_statuss (matrimony_id, target_matrimony_id, points)
                     VALUES (%s, %s, %s)
                 """, (user_matrimony_id, target_id, points))
 
@@ -4811,7 +4825,7 @@ async def get_latest_spends(current_user: dict = Depends(get_current_user_matrim
                 mp.full_name,
                 sa.points,
                 sa.created_at
-            FROM spend_actions sa
+            FROM spend_verification_statuss sa
             LEFT JOIN matrimony_profiles mp 
             ON sa.target_matrimony_id = mp.matrimony_id
             WHERE sa.matrimony_id = %s
@@ -4851,16 +4865,16 @@ async def get_spend_history(
 
         user_matrimony_id = current_user["matrimony_id"]
 
-        # Join transactions with profile info (for profiles on whom points were spent)
+        # Join transverification_statuss with profile info (for profiles on whom points were spent)
         cur.execute("""
             SELECT 
                 mp.matrimony_id AS target_profile_id,
                 mp.full_name AS target_profile_name,
                 -pt.points AS points_spent,  -- Store as positive
                 pt.created_at
-            FROM point_transactions pt
+            FROM point_transverification_statuss pt
             JOIN matrimony_profiles mp ON mp.matrimony_id != pt.matrimony_id  -- Other profiles
-            WHERE pt.matrimony_id = %s AND pt.transaction_type = 'spend'
+            WHERE pt.matrimony_id = %s AND pt.transverification_status_type = 'spend'
             ORDER BY pt.created_at DESC
         """, (user_matrimony_id,))
 
@@ -4922,7 +4936,7 @@ async def get_wallet_balance(
 
 # Admin view 
 @app.post("/admin/wallet/revert-spend")
-async def revert_spend_action(
+async def revert_spend_verification_status(
     spend_id: int = Form(...),
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
 ):
@@ -4932,16 +4946,16 @@ async def revert_spend_action(
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
-        # Fetch the spend action
+        # Fetch the spend verification_status
         cur.execute("""
             SELECT id, matrimony_id, target_matrimony_id, points 
-            FROM spend_actions 
+            FROM spend_verification_statuss 
             WHERE id = %s
         """, (spend_id,))
         spend_record = cur.fetchone()
 
         if not spend_record:
-            raise HTTPException(status_code=404, detail="Spend action not found")
+            raise HTTPException(status_code=404, detail="Spend verification_status not found")
 
         spend_id, source_id, target_id, points = spend_record
 
@@ -4952,16 +4966,16 @@ async def revert_spend_action(
             WHERE matrimony_id = %s
         """, (points, source_id))
 
-        # Insert reversal transaction
+        # Insert reversal transverification_status
         cur.execute("""
-            INSERT INTO point_transactions (matrimony_id, transaction_type, points, amount, reference_id)
+            INSERT INTO point_transverification_statuss (matrimony_id, transverification_status_type, points, amount, reference_id)
             VALUES (%s, 'revert', %s, NULL, %s)
         """, (source_id, points, spend_id))
 
 
-        # Optional: Delete or mark the original spend action as reverted
+        # Optional: Delete or mark the original spend verification_status as reverted
         cur.execute("""
-            UPDATE spend_actions
+            UPDATE spend_verification_statuss
             SET reverted = TRUE, reverted_at = now()
             WHERE id = %s
         """, (spend_id,))
@@ -5711,9 +5725,9 @@ def get_dashboard_overview(
                 mp.full_name, 
                 mp.photo_path,
                 SUM(pt.amount) AS total_amount
-            FROM point_transactions pt
+            FROM point_transverification_statuss pt
             JOIN matrimony_profiles mp ON mp.matrimony_id = pt.matrimony_id
-            WHERE pt.transaction_type = 'recharge'
+            WHERE pt.transverification_status_type = 'recharge'
             GROUP BY pt.matrimony_id, mp.full_name, mp.photo_path
             ORDER BY total_amount DESC
             LIMIT 5
@@ -5735,7 +5749,7 @@ def get_dashboard_overview(
                 mp.full_name,
                 mp.photo_path,
                 SUM(sa.points) AS total_points_spent
-            FROM spend_actions sa
+            FROM spend_verification_statuss sa
             JOIN matrimony_profiles mp ON mp.matrimony_id = sa.target_matrimony_id
             GROUP BY sa.target_matrimony_id, mp.full_name, mp.photo_path
             ORDER BY total_points_spent DESC
@@ -5771,15 +5785,15 @@ def get_dashboard_overview(
 @app.post("/admin/profile/verify")
 async def verify_profile(
     matrimony_id: str = Form(...),
-    action: str = Form(...),  # values: "approve", "pending"
-    comment: Optional[str] = Form(None),
+    verification_status: str = Form(...),  # values: "approve", "pending"
+    verification_comment: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
-    if current_user.get["user_type"] != "admin":
+    if current_user.get("user_type") != "admin":
         raise HTTPException(status_code=403, detail="Admin access only")
 
-    if action not in ["approve", "pending"]:
-        raise HTTPException(status_code=400, detail="Invalid action")
+    if verification_status not in ["approve", "pending"]:
+        raise HTTPException(status_code=400, detail="Invalid verification_status")
 
     conn = psycopg2.connect(**settings.DB_CONFIG)
     cur = conn.cursor()
@@ -5791,16 +5805,16 @@ async def verify_profile(
             verification_comment = %s
         WHERE matrimony_id = %s
     """, (
-        True if action == "approve" else False,
-        action,
-        comment,
+        True if verification_status == "approve" else False,
+        verification_status,
+        verification_comment,
         matrimony_id
     ))
     conn.commit()
     cur.close()
     conn.close()
 
-    return {"message": f"Profile {'approved' if action == 'approve' else 'pendinged'} successfully"}
+    return {"message": f"Profile {'approved' if verification_status == 'approve' else 'pendinged'} successfully"}
 
 # ------------------- Get Unverified Profiles ------------------- 
 @app.get("/profiles/unverified", response_model=AdminProfileVerificationSummary)
@@ -5875,49 +5889,43 @@ async def verify_profile(
     verification_comment: Optional[str] = Form(None),
     current_user: Dict = Depends(get_current_user_matrimony)
 ):
+    # ✅ Admin check
     if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admin can perform this action")
+        raise HTTPException(status_code=403, detail="Admin access only")
 
+    # ✅ DB connection
     conn = psycopg2.connect(**settings.DB_CONFIG)
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
 
     try:
-        # ✅ Check if profile exists
-        cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (matrimony_id,))
-        profile = cur.fetchone()
-
-        if not profile:
-            raise HTTPException(status_code=404, detail="Profile not found")
-
-        # ✅ Perform update
-        cur.execute(
-            """
+        cur.execute("""
             UPDATE matrimony_profiles
-            SET verification_status = %s,
+            SET is_verified = %s,
+                verification_status = %s,
                 verification_comment = %s,
-                is_verified = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE matrimony_id = %s
-            """,
-            (
-                verification_status,
-                verification_comment,
-                True if verification_status == "approve" else False,
-                matrimony_id,
-            )
-        )
+        """, (
+            True if verification_status == "approve" else False,
+            verification_status,
+            verification_comment,
+            matrimony_id
+        ))
+
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Matrimony ID not found")
 
         conn.commit()
 
         return {
-            "message": f"Profile verification status updated to '{verification_status}' successfully",
+            "message": f"Profile {'approved' if verification_status == 'approve' else 'marked as pending'} successfully",
             "matrimony_id": matrimony_id,
             "new_status": verification_status
         }
 
     except Exception as e:
         print(f"Error verifying profile: {e}")
-        raise HTTPException(status_code=500, detail="Error updating verification status")
+        raise HTTPException(status_code=500, detail="Failed to update verification status")
 
     finally:
         cur.close()
