@@ -4105,7 +4105,7 @@ async def get_my_profiles(current_user: dict = Depends(get_current_user_matrimon
         FROM 
             matrimony_profiles mp
         LEFT JOIN 
-            spend_verification_statuss sa 
+            spend_actions sa 
         ON 
             mp.matrimony_id = sa.matrimony_id
         WHERE 
@@ -4203,6 +4203,10 @@ async def update_matrimony_profile(
     dhosham: Optional[str] = Form(None),
     other_dhosham: Optional[str] = Form(None),
     quarter: Optional[str] = Form(None),
+    is_active: Optional[bool] = Form(None),
+    is_verified: Optional[bool] = Form(None),
+    verification_status: Optional[str] = Form(None),
+    verification_comment: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     try:
@@ -4280,6 +4284,10 @@ async def update_matrimony_profile(
                 "dhosham": dhosham,
                 "other_dhosham": other_dhosham,
                 "quarter": quarter,
+                "is_active": is_active,
+                "is_verified": is_verified,
+                "verification_status": verification_status,
+                "verification_comment": verification_comment
             }.items() if v is not None
         }
 
@@ -4706,7 +4714,7 @@ async def recharge_wallet(
         """, (matrimony_id, points, points))
 
         cur.execute("""
-            INSERT INTO point_transverification_statuss (matrimony_id, transverification_status_type, points, amount)
+            INSERT INTO point_transactions (matrimony_id, transaction_type, points, amount)
             VALUES (%s, 'recharge', %s, %s)
         """, (matrimony_id, points, amount))
 
@@ -4721,7 +4729,6 @@ async def recharge_wallet(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
 
 @app.post("/wallet/spend")
 async def spend_points_from_user_wallet(
@@ -4774,9 +4781,9 @@ async def spend_points_from_user_wallet(
 
                 full_name = profile_row[0]
 
-                # Insert transverification_status (no reference_id)
+                # Insert transaction (no reference_id)
                 cur.execute("""
-                    INSERT INTO spend_verification_statuss (matrimony_id, target_matrimony_id, points)
+                    INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
                     VALUES (%s, %s, %s)
                 """, (user_matrimony_id, target_id, points))
 
@@ -4825,7 +4832,7 @@ async def get_latest_spends(current_user: dict = Depends(get_current_user_matrim
                 mp.full_name,
                 sa.points,
                 sa.created_at
-            FROM spend_verification_statuss sa
+            FROM spend_actions sa
             LEFT JOIN matrimony_profiles mp 
             ON sa.target_matrimony_id = mp.matrimony_id
             WHERE sa.matrimony_id = %s
@@ -4865,16 +4872,16 @@ async def get_spend_history(
 
         user_matrimony_id = current_user["matrimony_id"]
 
-        # Join transverification_statuss with profile info (for profiles on whom points were spent)
+        # Join action with profile info (for profiles on whom points were spent)
         cur.execute("""
             SELECT 
                 mp.matrimony_id AS target_profile_id,
                 mp.full_name AS target_profile_name,
                 -pt.points AS points_spent,  -- Store as positive
                 pt.created_at
-            FROM point_transverification_statuss pt
+            FROM point_transaction pt
             JOIN matrimony_profiles mp ON mp.matrimony_id != pt.matrimony_id  -- Other profiles
-            WHERE pt.matrimony_id = %s AND pt.transverification_status_type = 'spend'
+            WHERE pt.matrimony_id = %s AND pt.transaction_type = 'spend'
             ORDER BY pt.created_at DESC
         """, (user_matrimony_id,))
 
@@ -4934,70 +4941,7 @@ async def get_wallet_balance(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-# Admin view 
-@app.post("/admin/wallet/revert-spend")
-async def revert_spend_verification_status(
-    spend_id: int = Form(...),
-    current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
-):
-    if current_user.get("user_type") != "admin":
-        raise HTTPException(status_code=403, detail="Only admin can access this endpoint")
-    try:
-        conn = psycopg2.connect(**settings.DB_CONFIG)
-        cur = conn.cursor()
-
-        # Fetch the spend verification_status
-        cur.execute("""
-            SELECT id, matrimony_id, target_matrimony_id, points 
-            FROM spend_verification_statuss 
-            WHERE id = %s
-        """, (spend_id,))
-        spend_record = cur.fetchone()
-
-        if not spend_record:
-            raise HTTPException(status_code=404, detail="Spend verification_status not found")
-
-        spend_id, source_id, target_id, points = spend_record
-
-        # Add points back to the user's wallet
-        cur.execute("""
-            UPDATE wallets
-            SET points_balance = points_balance + %s, updated_at = now()
-            WHERE matrimony_id = %s
-        """, (points, source_id))
-
-        # Insert reversal transverification_status
-        cur.execute("""
-            INSERT INTO point_transverification_statuss (matrimony_id, transverification_status_type, points, amount, reference_id)
-            VALUES (%s, 'revert', %s, NULL, %s)
-        """, (source_id, points, spend_id))
-
-
-        # Optional: Delete or mark the original spend verification_status as reverted
-        cur.execute("""
-            UPDATE spend_verification_statuss
-            SET reverted = TRUE, reverted_at = now()
-            WHERE id = %s
-        """, (spend_id,))
-
-        conn.commit()
-
-        return {
-            "status": "success",
-            "message": f"Reverted {points} points for spend_id {spend_id}",
-            "refunded_points": points
-        }
-
-    except Exception as e:
-        conn.rollback()
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Failed to revert spend")
-
-    finally:
-        if 'cur' in locals(): cur.close()
-        if 'conn' in locals(): conn.close()
-
-
+# Marking profiles as favorite or unfavorite
 @app.post("/matrimony/favorite-profiles", response_model=Dict[str, Any])
 async def mark_favorite_profiles(
     request: FavoriteProfilesRequest,
@@ -5817,29 +5761,30 @@ async def verify_profile(
     return {"message": f"Profile {'approved' if verification_status == 'approve' else 'pendinged'} successfully"}
 
 # ------------------- Get Unverified Profiles ------------------- 
-@app.get("/profiles/unverified", response_model=AdminProfileVerificationSummary)
+@app.get("/admin/profiles/unverified", response_model=AdminProfileVerificationSummary)
 async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_matrimony)):
     conn = psycopg2.connect(**settings.DB_CONFIG)
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         if current_user["user_type"] == "admin":
-            # ✅ Admin: Fetch both approved and pending profiles
+            # ✅ Admin: Fetch profiles with approve or pending status (case-insensitive)
             cur.execute("""
                 SELECT * FROM matrimony_profiles
-                WHERE verification_status IN ('approve', 'pending')
+                WHERE LOWER(verification_status) IN ('approve', 'pending')
             """)
             profiles = cur.fetchall()
 
-            # ✅ Count both approve and pending
+            # ✅ Count profiles by status
             cur.execute("""
-                SELECT verification_status, COUNT(*) as count
+                SELECT LOWER(verification_status) as verification_status, COUNT(*) as count
                 FROM matrimony_profiles
-                WHERE verification_status IN ('approve', 'pending')
-                GROUP BY verification_status
+                WHERE LOWER(verification_status) IN ('approve', 'pending')
+                GROUP BY LOWER(verification_status)
             """)
             status_counts = cur.fetchall()
 
+            # Extract counts
             pending_count = 0
             approved_count = 0
             for row in status_counts:
@@ -5856,18 +5801,18 @@ async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_
             }
 
         else:
-            # ✅ User: Only show their own profile if it's approved
+            # ✅ User: Show only their own approved profile
             cur.execute("""
                 SELECT * FROM matrimony_profiles
                 WHERE matrimony_id = %s AND verification_status = 'approve'
             """, [current_user["matrimony_id"]])
             profile = cur.fetchone()
             profiles = [profile] if profile else []
-
             approved_count = 1 if profile else 0
 
             return {
                 "message": "Fetched your approved profile successfully",
+                "pending_count": 0,
                 "approved_count": approved_count,
                 "profiles": profiles
             }
@@ -5880,7 +5825,8 @@ async def get_unverified_profiles(current_user: Dict = Depends(get_current_user_
         cur.close()
         conn.close()
 
-# ------------------- Update Profile Verification Status -------------------
+
+# ------------------- PUT Update Profile Verification Status -------------------
 
 @app.put("/admin/profiles/verify")
 async def verify_profile(
@@ -5889,11 +5835,12 @@ async def verify_profile(
     verification_comment: Optional[str] = Form(None),
     current_user: Dict = Depends(get_current_user_matrimony)
 ):
-    # ✅ Admin check
     if current_user.get("user_type") != "admin":
         raise HTTPException(status_code=403, detail="Admin access only")
 
-    # ✅ DB connection
+    # Normalize status to lowercase
+    verification_status = verification_status.lower()
+
     conn = psycopg2.connect(**settings.DB_CONFIG)
     cur = conn.cursor()
 
