@@ -4212,15 +4212,24 @@ async def update_matrimony_profile(
         user_type = current_user.get("user_type")
 
         # Determine matrimony_id
-        if user_type == "user":
+        if user_type == "admin":
             if not matrimony_id:
-                raise HTTPException(status_code=400, detail="Admin must provide matrimony_id in form-data to update a profile")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Admin must provide matrimony_id in form-data to update a profile"
+                )
         elif user_type == "user":
             matrimony_id = current_user.get("matrimony_id")
             if not matrimony_id:
-                raise HTTPException(status_code=401, detail="Unauthorized user access")
+                raise HTTPException(
+                    status_code=401,
+                    detail="Unauthorized user access"
+                )
         else:
-            raise HTTPException(status_code=403, detail="Invalid user type")
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid user type"
+            )
 
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
