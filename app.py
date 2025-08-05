@@ -2890,7 +2890,6 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
 async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     language: Optional[str] = Query("en", description="Language for response (e.g., 'en', 'ta')"),
-
 ):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -2900,7 +2899,13 @@ async def get_matrimony_profiles(
         logger.info(f"Requested language: {language}")
 
         user_type = current_user["user_type"].lower()
-        query = "SELECT * FROM matrimony_profiles WHERE is_active = true AND is_verified = true AND verification_status = 'approve'"
+
+        # Conditional base query depending on user type
+        if user_type == "admin":
+            query = "SELECT * FROM matrimony_profiles WHERE is_active = true"
+        else:
+            query = "SELECT * FROM matrimony_profiles WHERE is_active = true AND verification_status = 'approve'"
+
         params = []
 
         if user_type != "admin":
@@ -2908,6 +2913,7 @@ async def get_matrimony_profiles(
             user_gender = current_user.get("gender")
             if not user_gender:
                 raise HTTPException(status_code=400, detail="User gender not found")
+
             opposite_gender = "Female" if user_gender.lower() == "male" else "Male"
 
             query += """
@@ -2923,8 +2929,9 @@ async def get_matrimony_profiles(
             params.append(opposite_gender)
 
             logger.info(f"User view - Filtering opposite gender: {opposite_gender} and excluding globally blocked profiles")
+
         else:
-            # Admins: show all except profiles they blocked
+            # Admins: exclude only profiles they themselves blocked
             admin_email = current_user["email"]
             query += """
                 AND matrimony_id NOT IN (
@@ -3013,7 +3020,7 @@ async def get_matrimony_profiles(
 
             if translator and language.lower() != "en":
                 translatable_fields = [
-                    "full_name", "occupation", "gender", "education", "mother_tongue", "dhosham", 
+                    "full_name", "occupation", "gender", "education", "mother_tongue", "dhosham",
                     "work_type", "company", "work_location", "religion", "caste", "sub_caste"
                 ]
                 for field in translatable_fields:
@@ -3057,6 +3064,7 @@ async def get_matrimony_profiles(
     finally:
         cur.close()
         conn.close()
+
         
 # Endpoint to get matrimony preferences
 @app.get("/matrimony/preference")
