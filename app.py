@@ -2900,7 +2900,7 @@ async def get_matrimony_profiles(
         logger.info(f"Requested language: {language}")
 
         user_type = current_user["user_type"].lower()
-        query = "SELECT * FROM matrimony_profiles WHERE is_active = true"
+        query = "SELECT * FROM matrimony_profiles WHERE is_active = true AND is_verified = true AND verification_status = 'approve'"
         params = []
 
         if user_type != "admin":
