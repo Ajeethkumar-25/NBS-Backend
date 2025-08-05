@@ -2885,7 +2885,7 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
             cur.close()
         if conn:
             conn.close()
-
+#
 @app.get("/matrimony/profiles", response_model=Dict[str, List[MatrimonyProfileResponse]])
 async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
@@ -4208,10 +4208,13 @@ async def update_matrimony_profile(
     verification_comment: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
-    try:
-        user_type = current_user.get("user_type")
+    conn = psycopg2.connect(**settings.DB_CONFIG)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    s3_handler = S3Handler()
 
-        # Determine matrimony_id
+    try:
+        user_type = current_user.get("user_type", "").lower()
+
         if user_type == "admin":
             if not matrimony_id:
                 raise HTTPException(
@@ -4221,19 +4224,10 @@ async def update_matrimony_profile(
         elif user_type == "user":
             matrimony_id = current_user.get("matrimony_id")
             if not matrimony_id:
-                raise HTTPException(
-                    status_code=401,
-                    detail="Unauthorized user access"
-                )
+                raise HTTPException(status_code=403, detail="Unauthorized: No matrimony_id for user")
         else:
-            raise HTTPException(
-                status_code=403,
-                detail="Invalid user type"
-            )
+            raise HTTPException(status_code=403, detail="Unauthorized user type")
 
-        conn = psycopg2.connect(**settings.DB_CONFIG)
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        s3_handler = S3Handler()
 
         update_fields = {
             k: v for k, v in {
@@ -4275,7 +4269,7 @@ async def update_matrimony_profile(
                 "birth_time": birth_time,
                 "birth_place": birth_place,
                 "ascendent": ascendent,
-                "user_type": user_type,
+                # "user_type": user_type,
                 "marital_status": marital_status,
                 "preferred_age_min": preferred_age_min,
                 "preferred_age_max": preferred_age_max,
