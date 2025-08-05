@@ -4738,94 +4738,106 @@ async def recharge_wallet(
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+# Spending points from user wallet
+
 @app.post("/wallet/spend")
 async def spend_points_from_user_wallet(
-    payload: SpendRequestPayload,
+    profile_matrimony_ids: List[str] = Form(...),
+    points: List[int] = Form(...),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
+    if len(profile_matrimony_ids) != len(points):
+        raise HTTPException(status_code=400, detail="Mismatch in profile IDs and points")
+
     results = []
     errors = []
 
+    conn = psycopg2.connect(**settings.DB_CONFIG)
+    cur = conn.cursor()
+
     try:
-        conn = psycopg2.connect(**settings.DB_CONFIG)
-        cur = conn.cursor()
-
         user_matrimony_id = current_user["matrimony_id"]
-        total_points_needed = sum(req.points for req in payload.spend_requests)
 
-        # Fetch current user balance
+        # Build request list
+        spend_requests = []
+        for i in range(len(profile_matrimony_ids)):
+            spend_requests.append({
+                "profile_matrimony_id": profile_matrimony_ids[i],
+                "points": int(points[i])
+            })
+
+        # Filter already spent
+        valid_requests = []
+        for req in spend_requests:
+            cur.execute("""
+                SELECT 1 FROM spend_actions 
+                WHERE matrimony_id = %s AND target_matrimony_id = %s
+            """, (user_matrimony_id, req["profile_matrimony_id"]))
+            if cur.fetchone():
+                errors.append({
+                    "target_profile_id": req["profile_matrimony_id"],
+                    "error": "Points already spent on this profile."
+                })
+            else:
+                valid_requests.append(req)
+
+        total_points_needed = sum(req["points"] for req in valid_requests)
+
+        # Check balance
         cur.execute("SELECT points_balance FROM wallets WHERE matrimony_id = %s", (user_matrimony_id,))
         row = cur.fetchone()
-
         if not row:
-            raise HTTPException(status_code=404, detail="Current user's wallet not found")
-
+            raise HTTPException(status_code=404, detail="Wallet not found")
         user_balance = row[0]
-        if user_balance < total_points_needed:
-            raise HTTPException(status_code=400, detail="Insufficient points in current user's wallet")
 
-        # Deduct total points from current user wallet
+        if user_balance < total_points_needed:
+            raise HTTPException(status_code=400, detail="Insufficient wallet balance")
+
+        # Deduct points
         cur.execute("""
             UPDATE wallets
             SET points_balance = points_balance - %s, updated_at = now()
             WHERE matrimony_id = %s
         """, (total_points_needed, user_matrimony_id))
 
-        # Record individual spends per target profile
+        # Record spending
+        for req in valid_requests:
+            cur.execute("""
+                SELECT full_name FROM matrimony_profiles WHERE matrimony_id = %s
+            """, (req["profile_matrimony_id"],))
+            row = cur.fetchone()
+            full_name = row[0] if row else "Unknown"
 
-        for request in payload.spend_requests:
-            target_id = request.profile_matrimony_id
-            points = request.points
+            cur.execute("""
+                INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
+                VALUES (%s, %s, %s)
+            """, (user_matrimony_id, req["profile_matrimony_id"], req["points"]))
 
-            try:
-                # Fetch full_name of the target profile
-                cur.execute("""
-                    SELECT full_name FROM matrimony_profiles WHERE matrimony_id = %s
-                """, (target_id,))
-                profile_row = cur.fetchone()
+            results.append({
+                "target_profile_id": req["profile_matrimony_id"],
+                "target_profile_name": full_name,
+                "points_spent": req["points"]
+            })
 
-                if not profile_row:
-                    raise Exception(f"Profile not found for matrimony_id: {target_id}")
-
-                full_name = profile_row[0]
-
-                # Insert transaction (no reference_id)
-                cur.execute("""
-                    INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
-                    VALUES (%s, %s, %s)
-                """, (user_matrimony_id, target_id, points))
-
-                results.append({
-                    "target_profile_id": target_id,
-                    "target_profile_name": full_name,
-                    "points_spent": points
-                })
-
-            except Exception as e_inner:
-                errors.append({
-                    "target_profile_id": target_id,
-                    "error": str(e_inner)
-                })
-        
         conn.commit()
 
         return {
             "status": "partial_success" if errors else "success",
+            "message": "Points spent only on new profiles. Previously spent profiles skipped.",
             "results": results,
             "errors": errors
         }
 
-    except HTTPException as e:
-        raise e
     except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
+        if 'conn' in locals(): conn.rollback()
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+
+# Fetching spend latest of the user
 @app.get("/wallet/spend/latest")
 async def get_latest_spends(current_user: dict = Depends(get_current_user_matrimony)):
     try:
@@ -4834,6 +4846,7 @@ async def get_latest_spends(current_user: dict = Depends(get_current_user_matrim
 
         user_matrimony_id = current_user["matrimony_id"]
 
+        # Fetch latest 10 spend actions
         cur.execute("""
             SELECT 
                 sa.target_matrimony_id,
@@ -4847,7 +4860,6 @@ async def get_latest_spends(current_user: dict = Depends(get_current_user_matrim
             ORDER BY sa.created_at DESC
             LIMIT 10
         """, (user_matrimony_id,))
-
         rows = cur.fetchall()
 
         results = [
@@ -4860,27 +4872,38 @@ async def get_latest_spends(current_user: dict = Depends(get_current_user_matrim
             for row in rows
         ]
 
-        return {"status": "success", "results": results}
+        # Count distinct target profiles spent on
+        cur.execute("""
+            SELECT COUNT(DISTINCT target_matrimony_id)
+            FROM spend_actions
+            WHERE matrimony_id = %s
+        """, (user_matrimony_id,))
+        count_row = cur.fetchone()
+        distinct_profile_count = count_row[0] if count_row else 0
+
+        return {
+            "status": "success",
+            "results": results,
+            "distinct_profile_count": distinct_profile_count
+        }
 
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
-
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
+# Fetching spend history of the user
 @app.get("/wallet/spend-history")
-async def get_spend_history(
-    current_user: dict = Depends(get_current_user_matrimony)
-):
+async def get_spend_history(current_user: dict = Depends(get_current_user_matrimony)):
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor()
 
         user_matrimony_id = current_user["matrimony_id"]
 
-        # Join action with profile info (for profiles on whom points were spent)
+        # Fetch all spend transactions with target profile details
         cur.execute("""
             SELECT 
                 mp.matrimony_id AS target_profile_id,
@@ -4888,11 +4911,10 @@ async def get_spend_history(
                 -pt.points AS points_spent,  -- Store as positive
                 pt.created_at
             FROM point_transaction pt
-            JOIN matrimony_profiles mp ON mp.matrimony_id != pt.matrimony_id  -- Other profiles
+            JOIN matrimony_profiles mp ON mp.matrimony_id != pt.matrimony_id
             WHERE pt.matrimony_id = %s AND pt.transaction_type = 'spend'
             ORDER BY pt.created_at DESC
         """, (user_matrimony_id,))
-
         rows = cur.fetchall()
 
         history = [
@@ -4905,7 +4927,20 @@ async def get_spend_history(
             for row in rows
         ]
 
-        return {"matrimony_id": user_matrimony_id, "spend_history": history}
+        # Count distinct profiles spent on
+        cur.execute("""
+            SELECT COUNT(DISTINCT target_matrimony_id)
+            FROM spend_actions
+            WHERE matrimony_id = %s
+        """, (user_matrimony_id,))
+        count_row = cur.fetchone()
+        distinct_profile_count = count_row[0] if count_row else 0
+
+        return {
+            "matrimony_id": user_matrimony_id,
+            "distinct_profile_count": distinct_profile_count,
+            "spend_history": history
+        }
 
     except Exception as e:
         traceback.print_exc()
@@ -4913,6 +4948,7 @@ async def get_spend_history(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
+
 
 @app.get("/wallet/balance")
 async def get_wallet_balance(
@@ -4946,8 +4982,11 @@ async def get_wallet_balance(
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-        if 'cur' in locals(): cur.close()
-        if 'conn' in locals(): conn.close()
+        if 'cur' in locals(): 
+            cur.close()
+        if 'conn' in locals(): 
+            conn.close()
+        
 
 # Marking profiles as favorite or unfavorite
 @app.post("/matrimony/favorite-profiles", response_model=Dict[str, Any])
