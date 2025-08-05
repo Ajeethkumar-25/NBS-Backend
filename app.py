@@ -4182,7 +4182,7 @@ async def update_matrimony_profile(
     birth_time: Optional[str] = Form(None),
     birth_place: Optional[str] = Form(None),
     ascendent: Optional[str] = Form(None),
-    user_type: Optional[str] = Form(None),
+    # user_type: Optional[str] = Form(None),
     marital_status: Optional[str] = Form(None),
     preferred_age_min: Optional[str] = Form(None),
     preferred_age_max: Optional[str] = Form(None),
