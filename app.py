@@ -2702,6 +2702,25 @@ async def login_matrimony(request: MatrimonyLoginRequest):
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
+        # Check if user is blocked in the blocked_users table
+        cur.execute(
+            """
+            SELECT * FROM blocked_users
+            WHERE blocked_matrimony_id = %s AND is_blocked = true
+            """,
+            (request.matrimony_id,)
+        )
+        blocked_record = cur.fetchone()
+        print("Blocked record found:", dict(blocked_record) if blocked_record else "None")
+
+        if blocked_record:
+            reason = blocked_record.get("reason") or "No reason specified"
+            raise HTTPException(
+                status_code=403,
+                detail=f"Admin has blocked this profile. Reason: {reason}"
+            )
+
+        # Password and phone number from user profile
         stored_password = user.get("password")
         stored_phone = user.get("phone_number")
 
@@ -2753,12 +2772,17 @@ async def login_matrimony(request: MatrimonyLoginRequest):
             matrimony_id=request.matrimony_id
         )
 
+    except HTTPException as e:
+        raise e  # Let FastAPI handle known HTTP errors
+
     except psycopg2.Error as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error: {type(e).__name__}: {str(e)}")
+
     finally:
         if 'cur' in locals():
             cur.close()
@@ -3080,14 +3104,6 @@ async def get_matrimony_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     case_sensitive: Optional[bool] = Query(default=False)
 ):
-    """
-    Get compatible matrimony profiles based on:
-    - Opposite gender
-    - Preferred rashi
-    - Preferred nakshatra
-    - Nakshatra compatibility (Utthamam/Madhyamam)
-    """
-
     if is_user_blocked(current_user.get("matrimony_id")):
         raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
 
@@ -3110,8 +3126,6 @@ async def get_matrimony_preferences(
             items = value
         else:
             return None
-        if not items:
-            return None
         return [
             item if item.startswith("http") else
             f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
@@ -3119,11 +3133,8 @@ async def get_matrimony_preferences(
         ]
 
     try:
-        # Fetch user profile
         cur.execute("""
-            SELECT matrimony_id, full_name, gender, preferred_rashi, preferred_nakshatra, nakshatra,
-                   preferred_age_min, preferred_age_max, preferred_height_min, preferred_height_max,
-                   preferred_religion, preferred_caste, preferred_sub_caste
+            SELECT matrimony_id, full_name, gender, nakshatra, preferred_nakshatra
             FROM matrimony_profiles 
             WHERE matrimony_id = %s
         """, [current_user.get("matrimony_id")])
@@ -3134,6 +3145,7 @@ async def get_matrimony_preferences(
 
         user_gender = user_profile['gender'].strip().lower()
         opposite_gender = "female" if user_gender == "male" else "male"
+        Male_star = user_profile['nakshatra']
 
         query = """
             SELECT * FROM matrimony_profiles
@@ -3150,17 +3162,6 @@ async def get_matrimony_preferences(
         """
         params = [opposite_gender, user_profile['matrimony_id'], current_user['matrimony_id']]
 
-        # # -- Optional filters based on user preferences --
-        # if user_profile['preferred_rashi']:
-        #     preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
-        #     if preferred_rashi_list:
-        #         if case_sensitive:
-        #             query += " AND (rashi IS NOT NULL AND rashi = ANY(%s))"
-        #             params.append(preferred_rashi_list)
-        #         else:
-        #             query += " AND (rashi IS NOT NULL AND LOWER(rashi) = ANY(%s))"
-        #             params.append([r.lower() for r in preferred_rashi_list])
-
         if user_profile.get('preferred_nakshatra'):
             preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
             if preferred_nakshatra_list:
@@ -3173,61 +3174,104 @@ async def get_matrimony_preferences(
 
         cur.execute(query, params)
         profiles = cur.fetchall()
+
+        matcher = NakshatraMatcher()
         compatible_profiles = []
+        utthamam_matches = []
+
         for profile in profiles:
             profile_dict = dict(profile)
-
             profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photo")
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
             if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
-                profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
-
-            if isinstance(profile_dict.get("birth_time"), time):
-                profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
-
-            if profile_dict.get("date_of_birth"):
-                dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
+                dob = profile_dict["date_of_birth"]
                 today = datetime.today()
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+                profile_dict["date_of_birth"] = dob.strftime('%Y-%m-%d')
 
-            Male_star = user_profile['nakshatra']
-            Female_star = profile.get('nakshatra')
+            Female_star = profile_dict.get("nakshatra")
+            if not Female_star:
+                continue
 
-            match_result = None
-            if Male_star and Female_star:
-                if user_gender == "male":
-                    match_result = nakshatra_matcher.check_compatibility(Male_star, Female_star)
-                else:
-                    match_result = nakshatra_matcher.check_compatibility(Female_star, Male_star)
-
-            if match_result:
-                profile_dict['nakshatra_match_score'] = match_result.get('combined_score', 0)
-                profile_dict['nakshatra_match_type'] = 'Utthamam' if match_result.get('is_utthamam') else 'Madhyamam' if match_result.get('is_madhyamam') else 'Not Compatible'
+            if user_gender == "male":
+                result = matcher.check_compatibility(Male_star, Female_star)
             else:
-                profile_dict['nakshatra_match_score'] = 0
-                profile_dict['nakshatra_match_type'] = 'Unknown'
+                result = matcher.check_compatibility(Female_star, Male_star)
+
+            profile_dict["nakshatra_match_score"] = result["combined_score"]
+            profile_dict["nakshatra_match_type"] = (
+                "Utthamam" if result["is_utthamam"] else
+                "Madhyamam" if result["is_madhyamam"] else
+                "Not Compatible"
+            )
 
             compatible_profiles.append(profile_dict)
+            if result["is_utthamam"]:
+                utthamam_matches.append(profile_dict)
 
-        # Filter utthamam matches
-        utthamam_matches = [p for p in compatible_profiles if p.get('nakshatra_match_type') == 'Utthamam']
+        if not compatible_profiles:
+            # Fallback: Fetch all utthamam matches from full DB
+            cur.execute("""
+                SELECT * FROM matrimony_profiles
+                WHERE LOWER(gender) = %s
+                AND matrimony_id != %s
+                AND is_active = TRUE
+                AND is_verified = true
+                AND verification_status = 'approve'
+                AND matrimony_id NOT IN (
+                    SELECT blocked_matrimony_id 
+                    FROM blocked_users 
+                    WHERE admin_matrimony_id = %s
+                )
+            """, [opposite_gender, user_profile['matrimony_id'], current_user['matrimony_id']])
+
+            fallback_profiles = cur.fetchall()
+            for profile in fallback_profiles:
+                profile_dict = dict(profile)
+                Female_star = profile_dict.get("nakshatra")
+                if not Female_star:
+                    continue
+
+                if user_gender == "male":
+                    result = matcher.check_compatibility(Male_star, Female_star)
+                else:
+                    result = matcher.check_compatibility(Female_star, Male_star)
+
+                if result["is_utthamam"]:
+                    profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photo")
+                    profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
+                    profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
+
+                    if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
+                        dob = profile_dict["date_of_birth"]
+                        today = datetime.today()
+                        profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+                        profile_dict["date_of_birth"] = dob.strftime('%Y-%m-%d')
+
+                    profile_dict["nakshatra_match_score"] = result["combined_score"]
+                    profile_dict["nakshatra_match_type"] = "Utthamam"
+                    utthamam_matches.append(profile_dict)
+
+        if not compatible_profiles:
+            message = f"No compatible profiles matched your preferences. Showing Utthamam matches instead."
+        else:
+            message = f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found"
 
         return {
-            "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found",
+            "message": message,
             "profiles": compatible_profiles,
             "matching_profiles": utthamam_matches
         }
 
+
     except Exception as e:
         print(f"Exception occurred: {e}")
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
-
     finally:
         cur.close()
         conn.close()
-
 
 # In Admin POV: get Method matrimony/preference updated -----------------
 @app.get("/matrimony/admin/preference", response_model=List[Dict[str, Any]])
@@ -4808,7 +4852,7 @@ async def spend_points_from_user_wallet(
                 INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
                 VALUES (%s, %s, %s)
             """, (user_matrimony_id, req.profile_matrimony_id, req.points))
-            
+
             results.append({
                 "target_profile_id": req.profile_matrimony_id,
                 "target_profile_name": full_name,
