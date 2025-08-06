@@ -436,10 +436,7 @@ class IncrementMatrimonyIdRequest(BaseModel):
 class SpendRequest(BaseModel):
     profile_matrimony_id: str
     points: int
-
-class SpendRequestPayload(BaseModel):
-    spend_requests: List[SpendRequest]
-
+    
 class FavoriteProfilesRequest(BaseModel):
     favorite_profile_ids: List[str]
     unfavorite_profile_ids: Optional[List[str]] = []
@@ -2994,6 +2991,7 @@ async def get_matrimony_profiles(
         all_profiles = []
         cutoff_date = datetime.now() - timedelta(days=30)
 
+
         for profile in profiles:
             profile_dict = dict(profile)
 
@@ -3165,6 +3163,9 @@ async def get_matrimony_preferences(
 
         cur.execute(query, params)
         profiles = cur.fetchall()
+        # Fetch profiles from the database
+        profiles = [profile] if profile else []
+        logger.info(f"Processing {len(profiles)} profiles")
 
         compatible_profiles = []
         for profile in profiles:
@@ -4744,13 +4745,9 @@ async def recharge_wallet(
 
 @app.post("/wallet/spend")
 async def spend_points_from_user_wallet(
-    profile_matrimony_ids: List[str] = Form(...),
-    points: List[int] = Form(...),
+    request: SpendRequest,
     current_user: dict = Depends(get_current_user_matrimony)
 ):
-    if len(profile_matrimony_ids) != len(points):
-        raise HTTPException(status_code=400, detail="Mismatch in profile IDs and points")
-
     results = []
     errors = []
 
@@ -4760,30 +4757,16 @@ async def spend_points_from_user_wallet(
     try:
         user_matrimony_id = current_user["matrimony_id"]
 
-        # Build request list
-        spend_requests = []
-        for i in range(len(profile_matrimony_ids)):
-            spend_requests.append({
-                "profile_matrimony_id": profile_matrimony_ids[i],
-                "points": int(points[i])
-            })
-
-        # Filter already spent
-        valid_requests = []
-        for req in spend_requests:
-            cur.execute("""
-                SELECT 1 FROM spend_actions 
-                WHERE matrimony_id = %s AND target_matrimony_id = %s
-            """, (user_matrimony_id, req["profile_matrimony_id"]))
-            if cur.fetchone():
-                errors.append({
-                    "target_profile_id": req["profile_matrimony_id"],
-                    "error": "Points already spent on this profile."
-                })
-            else:
-                valid_requests.append(req)
-
-        total_points_needed = sum(req["points"] for req in valid_requests)
+        # Check if already spent
+        cur.execute("""
+            SELECT 1 FROM spend_actions 
+            WHERE matrimony_id = %s AND target_matrimony_id = %s
+        """, (user_matrimony_id, request.profile_matrimony_id))
+        if cur.fetchone():
+            return {
+                "status": "skipped",
+                "message": f"Points already spent on profile {request.profile_matrimony_id}"
+            }
 
         # Check balance
         cur.execute("SELECT points_balance FROM wallets WHERE matrimony_id = %s", (user_matrimony_id,))
@@ -4792,7 +4775,7 @@ async def spend_points_from_user_wallet(
             raise HTTPException(status_code=404, detail="Wallet not found")
         user_balance = row[0]
 
-        if user_balance < total_points_needed:
+        if user_balance < request.points:
             raise HTTPException(status_code=400, detail="Insufficient wallet balance")
 
         # Deduct points
@@ -4800,34 +4783,28 @@ async def spend_points_from_user_wallet(
             UPDATE wallets
             SET points_balance = points_balance - %s, updated_at = now()
             WHERE matrimony_id = %s
-        """, (total_points_needed, user_matrimony_id))
+        """, (request.points, user_matrimony_id))
 
         # Record spending
-        for req in valid_requests:
-            cur.execute("""
-                SELECT full_name FROM matrimony_profiles WHERE matrimony_id = %s
-            """, (req["profile_matrimony_id"],))
-            row = cur.fetchone()
-            full_name = row[0] if row else "Unknown"
+        cur.execute("SELECT full_name FROM matrimony_profiles WHERE matrimony_id = %s", (request.profile_matrimony_id,))
+        row = cur.fetchone()
+        full_name = row[0] if row else "Unknown"
 
-            cur.execute("""
-                INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
-                VALUES (%s, %s, %s)
-            """, (user_matrimony_id, req["profile_matrimony_id"], req["points"]))
-
-            results.append({
-                "target_profile_id": req["profile_matrimony_id"],
-                "target_profile_name": full_name,
-                "points_spent": req["points"]
-            })
+        cur.execute("""
+            INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
+            VALUES (%s, %s, %s)
+        """, (user_matrimony_id, request.profile_matrimony_id, request.points))
 
         conn.commit()
 
         return {
-            "status": "partial_success" if errors else "success",
-            "message": "Points spent only on new profiles. Previously spent profiles skipped.",
-            "results": results,
-            "errors": errors
+            "status": "success",
+            "message": f"Points spent on profile {request.profile_matrimony_id}",
+            "result": {
+                "target_profile_id": request.profile_matrimony_id,
+                "target_profile_name": full_name,
+                "points_spent": request.points
+            }
         }
 
     except Exception as e:
@@ -4837,7 +4814,6 @@ async def spend_points_from_user_wallet(
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
 
 # Fetching spend latest of the user
 @app.get("/wallet/spend/latest")
