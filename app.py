@@ -2924,10 +2924,11 @@ async def get_matrimony_profiles(
                     WHERE is_blocked = true
                         AND is_verified = true
                         AND verification_status = 'approve'
+                        AND is_viewed = true
+                        AND viewed_status = 'viewed'
                 )
             """
             params.append(opposite_gender)
-
             logger.info(f"User view - Filtering opposite gender: {opposite_gender} and excluding globally blocked profiles")
 
         else:
@@ -3135,6 +3136,8 @@ async def get_matrimony_preferences(
             AND is_active = TRUE
             AND is_verified = true
             AND verification_status = 'approve'
+            AND is_viewed = true
+            AND viewed_status = 'viewed'
             AND matrimony_id NOT IN (
                 SELECT blocked_matrimony_id 
                 FROM blocked_users 
@@ -3143,16 +3146,16 @@ async def get_matrimony_preferences(
         """
         params = [opposite_gender, user_profile['matrimony_id'], current_user['matrimony_id']]
 
-        # -- Optional filters based on user preferences --
-        if user_profile['preferred_rashi']:
-            preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
-            if preferred_rashi_list:
-                if case_sensitive:
-                    query += " AND (rashi IS NOT NULL AND rashi = ANY(%s))"
-                    params.append(preferred_rashi_list)
-                else:
-                    query += " AND (rashi IS NOT NULL AND LOWER(rashi) = ANY(%s))"
-                    params.append([r.lower() for r in preferred_rashi_list])
+        # # -- Optional filters based on user preferences --
+        # if user_profile['preferred_rashi']:
+        #     preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
+        #     if preferred_rashi_list:
+        #         if case_sensitive:
+        #             query += " AND (rashi IS NOT NULL AND rashi = ANY(%s))"
+        #             params.append(preferred_rashi_list)
+        #         else:
+        #             query += " AND (rashi IS NOT NULL AND LOWER(rashi) = ANY(%s))"
+        #             params.append([r.lower() for r in preferred_rashi_list])
 
         if user_profile.get('preferred_nakshatra'):
             preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
@@ -3166,15 +3169,11 @@ async def get_matrimony_preferences(
 
         cur.execute(query, params)
         profiles = cur.fetchall()
-        # Fetch profiles from the database
-        profiles = [profile] if profile else []
-        logger.info(f"Processing {len(profiles)} profiles")
-
         compatible_profiles = []
         for profile in profiles:
             profile_dict = dict(profile)
 
-            profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
+            profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photo")
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
@@ -3466,17 +3465,19 @@ async def get_matrimony_preferences(
         query = """
             SELECT * FROM matrimony_profiles
             WHERE gender ILIKE %s
-              AND matrimony_id != %s
-              AND TRIM(work_location) IS NOT NULL
-              AND TRIM(work_location) != ''
-              AND LOWER(TRIM(work_location)) != 'null'
-              AND is_active = TRUE
-              AND is_verified = TRUE
-              AND verification_status = 'approve'
-                AND matrimony_id NOT IN (
-                  SELECT blocked_matrimony_id 
-                  FROM blocked_users 
-                  WHERE admin_matrimony_id = %s
+            AND matrimony_id != %s
+            AND TRIM(work_location) IS NOT NULL
+            AND TRIM(work_location) != ''
+            AND LOWER(TRIM(work_location)) != 'null'
+            AND is_active = TRUE
+            AND is_verified = TRUE
+            AND verification_status = 'approve'
+            AND is_viewed = true
+            AND viewed_status = 'viewed'
+            AND matrimony_id NOT IN (
+                SELECT blocked_matrimony_id 
+                FROM blocked_users 
+                WHERE admin_matrimony_id = %s
               )
         """
         params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
@@ -3575,17 +3576,17 @@ async def get_all_location_preferences(
             query = """
                 SELECT * FROM matrimony_profiles
                 WHERE gender ILIKE %s
-                  AND matrimony_id != %s
-                  AND TRIM(work_location) IS NOT NULL
-                  AND TRIM(work_location) != ''
-                  AND LOWER(TRIM(work_location)) != 'null'
-                  AND is_active = TRUE
-                  AND is_verified = TRUE
-                  AND verification_status = 'approve'
-                  AND matrimony_id NOT IN (
-                      SELECT blocked_matrimony_id 
-                      FROM blocked_users 
-                      WHERE admin_matrimony_id = %s
+                AND matrimony_id != %s
+                AND TRIM(work_location) IS NOT NULL
+                AND TRIM(work_location) != ''
+                AND LOWER(TRIM(work_location)) != 'null'
+                AND is_active = TRUE
+                AND is_verified = TRUE
+                AND verification_status = 'approve'
+                AND matrimony_id NOT IN (
+                    SELECT blocked_matrimony_id 
+                    FROM blocked_users 
+                    WHERE admin_matrimony_id = %s
                   )
             """
             params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
@@ -3732,17 +3733,19 @@ async def get_matrimony_caste_preferences(
         query = """
             SELECT * FROM matrimony_profiles
             WHERE gender ILIKE %s
-              AND matrimony_id != %s
-              AND TRIM(caste) IS NOT NULL
-              AND TRIM(caste) != ''
-              AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
-              AND is_active = TRUE
-              AND is_verified = TRUE
-              AND verification_status = 'approve'
-              AND matrimony_id NOT IN (
-                  SELECT blocked_matrimony_id 
-                  FROM blocked_users 
-                  WHERE admin_matrimony_id = %s
+            AND matrimony_id != %s
+            AND TRIM(caste) IS NOT NULL
+            AND TRIM(caste) != ''
+            AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
+            AND is_active = TRUE
+            AND is_verified = TRUE
+            AND verification_status = 'approve'
+            AND is_viewed = true
+            AND viewed_status = 'viewed'
+            AND matrimony_id NOT IN (
+                SELECT blocked_matrimony_id 
+                FROM blocked_users 
+                WHERE admin_matrimony_id = %s
               )
         """
         params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
@@ -4794,16 +4797,25 @@ async def spend_points_from_user_wallet(
             WHERE matrimony_id = %s
         """, (total_points_needed, user_matrimony_id))
 
-        # Record spending
+        # Record spending and update is_viewed
         for req in valid_requests:
             cur.execute("SELECT full_name FROM matrimony_profiles WHERE matrimony_id = %s", (req.profile_matrimony_id,))
             row = cur.fetchone()
             full_name = row[0] if row else "Unknown"
 
+            # Insert spend action
             cur.execute("""
                 INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
                 VALUES (%s, %s, %s)
             """, (user_matrimony_id, req.profile_matrimony_id, req.points))
+
+            # ✅ Mark profile as viewed
+            cur.execute("""
+                UPDATE matrimony_profiles
+                SET is_viewed = TRUE,
+                viewed_status = 'viewed'
+                WHERE matrimony_id = %s
+            """, (req.profile_matrimony_id,))
 
             results.append({
                 "target_profile_id": req.profile_matrimony_id,
@@ -4824,6 +4836,7 @@ async def spend_points_from_user_wallet(
         if 'conn' in locals(): conn.rollback()
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
+
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
@@ -5101,6 +5114,10 @@ async def get_favorite_profiles(
             JOIN matrimony_profiles mp ON fp.favorite_profile_id = mp.matrimony_id
             WHERE fp.matrimony_id = %s
             AND is_active = TRUE
+            AND is_verified = TRUE
+            AND verification_status = 'verified'
+            AND is_viewed = TRUE
+            AND viewed_status = 'viewed'
         """
         params = [matrimony_id]
 
