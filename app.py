@@ -387,6 +387,8 @@ class MatrimonyProfileResponse(BaseModel):
     is_verified:  Optional[str]
     verification_status: Optional[str] 
     verification_verification_comment: Optional[str] 
+    is_viewed: Optional[bool]
+    viewed_status: Optional[str]
 
 class MatrimonyProfilesWithMessage(BaseModel):
     message: str
@@ -2885,7 +2887,7 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
             cur.close()
         if conn:
             conn.close()
-#
+# Matrimony Profiles Endpoint
 @app.get("/matrimony/profiles", response_model=Dict[str, List[MatrimonyProfileResponse]])
 async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
