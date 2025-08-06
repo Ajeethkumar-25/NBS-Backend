@@ -844,7 +844,7 @@ async def verify_refresh_token(refresh_token: str) -> Dict:
             """
             SELECT matrimony_id, expires_at, is_valid 
             FROM matrimony_refresh_tokens 
-            WHERE token = %s AND is_valid = true
+            WHERE token = %s
             """,
             (refresh_token,)
         )
@@ -2860,14 +2860,14 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
 
         cur.execute("UPDATE matrimony_refresh_tokens SET is_valid = false WHERE token = %s", (token.refresh_token,))
         cur.execute("""
-            INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at, is_valid)
-            VALUES (%s, %s, %s, true)
-            ON CONFLICT (matrimony_id) DO UPDATE SET
-                token = EXCLUDED.token,
-                expires_at = EXCLUDED.expires_at,
-                is_valid = true
-        """, (matrimony_id, new_refresh_token, datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)))
-        conn.commit()
+    INSERT INTO matrimony_refresh_tokens (matrimony_id, token, expires_at, is_valid)
+    VALUES (%s, %s, %s, TRUE)
+    ON CONFLICT (matrimony_id) DO UPDATE SET
+        token = EXCLUDED.token,
+        expires_at = EXCLUDED.expires_at,
+        is_valid = TRUE
+""", (matrimony_id, new_refresh_token, datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)))
+
 
         return {
             "access_token": access_token,
@@ -5740,6 +5740,7 @@ def get_dashboard_overview(
             }
             for row in cur.fetchall()
         ]
+        top_spenders_amount = sum(spender["total_amount"] for spender in top_spenders)
 
         # 💎 Top 5 Profiles by Points Consumed (Spent On)
         cur.execute("""
@@ -5770,7 +5771,12 @@ def get_dashboard_overview(
             "active_status_trend": active_graph_points,
             "blocked_status_counts": blocked_counts,
             "top_spenders": top_spenders,
-            "top_profiles_by_points": top_profiles_by_points
+            "top_spenders_count": len(top_spenders),
+            "top_spenders_amount": top_spenders_amount,
+            "top_profiles_by_points": top_profiles_by_points,
+            "top_profiles_by_points_count": len(top_profiles_by_points),
+
+            "message": "Dashboard overview fetched successfully"
         }
 
     except Exception as e:
