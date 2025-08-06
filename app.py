@@ -5116,10 +5116,7 @@ async def get_favorite_profiles(
             JOIN matrimony_profiles mp ON fp.favorite_profile_id = mp.matrimony_id
             WHERE fp.matrimony_id = %s
             AND is_active = TRUE
-            AND is_verified = TRUE
-            AND verification_status = 'verified'
-            AND is_viewed = TRUE
-            AND viewed_status = 'viewed'
+
         """
         params = [matrimony_id]
 
