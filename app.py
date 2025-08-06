@@ -387,8 +387,6 @@ class MatrimonyProfileResponse(BaseModel):
     is_verified:  Optional[str]
     verification_status: Optional[str] 
     verification_verification_comment: Optional[str] 
-    is_viewed: Optional[bool]
-    viewed_status: Optional[str]
 
 class MatrimonyProfilesWithMessage(BaseModel):
     message: str
@@ -502,7 +500,7 @@ class ViewedProfilesResponse(BaseModel):
     success: bool
     viewer_id: str
     viewed_profiles: List[str]
-    
+
 # Define the NakshatraMatcher class 
 class NakshatraMatcher:
     def __init__(self):
@@ -2934,8 +2932,6 @@ async def get_matrimony_profiles(
                     WHERE is_blocked = true
                         AND is_verified = true
                         AND verification_status = 'approve'
-                        AND is_viewed = true
-                        AND viewed_status = 'viewed'
                 )
             """
             params.append(opposite_gender)
@@ -3146,8 +3142,6 @@ async def get_matrimony_preferences(
             AND is_active = TRUE
             AND is_verified = true
             AND verification_status = 'approve'
-            AND is_viewed = true
-            AND viewed_status = 'viewed'
             AND matrimony_id NOT IN (
                 SELECT blocked_matrimony_id 
                 FROM blocked_users 
@@ -3482,8 +3476,6 @@ async def get_matrimony_preferences(
             AND is_active = TRUE
             AND is_verified = TRUE
             AND verification_status = 'approve'
-            AND is_viewed = true
-            AND viewed_status = 'viewed'
             AND matrimony_id NOT IN (
                 SELECT blocked_matrimony_id 
                 FROM blocked_users 
@@ -3750,8 +3742,6 @@ async def get_matrimony_caste_preferences(
             AND is_active = TRUE
             AND is_verified = TRUE
             AND verification_status = 'approve'
-            AND is_viewed = true
-            AND viewed_status = 'viewed'
             AND matrimony_id NOT IN (
                 SELECT blocked_matrimony_id 
                 FROM blocked_users 
@@ -4818,15 +4808,7 @@ async def spend_points_from_user_wallet(
                 INSERT INTO spend_actions (matrimony_id, target_matrimony_id, points)
                 VALUES (%s, %s, %s)
             """, (user_matrimony_id, req.profile_matrimony_id, req.points))
-
-            # ✅ Mark profile as viewed
-            cur.execute("""
-                UPDATE matrimony_profiles
-                SET is_viewed = TRUE,
-                viewed_status = 'viewed'
-                WHERE matrimony_id = %s
-            """, (req.profile_matrimony_id,))
-
+            
             results.append({
                 "target_profile_id": req.profile_matrimony_id,
                 "target_profile_name": full_name,
