@@ -494,7 +494,15 @@ class ContactUsResponse(ContactUsCreate):
     matrimony_id: str
     created_at: datetime
 
+class MarkViewedRequest(BaseModel):
+    profile_matrimony_ids: List[str]
 
+
+class ViewedProfilesResponse(BaseModel):
+    success: bool
+    viewer_id: str
+    viewed_profiles: List[str]
+    
 # Define the NakshatraMatcher class 
 class NakshatraMatcher:
     def __init__(self):
@@ -5937,6 +5945,82 @@ async def verify_profile(
     finally:
         cur.close()
         conn.close()
+
+# marked -viewProfiles
+@app.post("/matrimony/mark-viewed")
+def mark_profile_viewed(
+    payload: MarkViewedRequest,
+    current_user=Depends(get_current_user_matrimony)
+):
+    viewer_id = current_user["matrimony_id"]
+    profile_ids = payload.profile_matrimony_ids
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+
+    try:
+        for viewed_id in profile_ids:
+            cur.execute("""
+                INSERT INTO viewed_profiles (matrimony_id, viewed_matrimony_id)
+                VALUES (%s, %s)
+                ON CONFLICT (matrimony_id, viewed_matrimony_id) DO NOTHING
+            """, (viewer_id, viewed_id))
+
+        conn.commit()
+        return {
+            "success": True,
+            "message": f"Marked {len(profile_ids)} profiles as viewed",
+            "viewed_profiles": profile_ids
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ------------------- Get Viewed Profiles -------------------
+@app.get("/matrimony/viewed-profiles", response_model=ViewedProfilesResponse)
+def get_viewed_profiles(current_user=Depends(get_current_user_matrimony)):
+    viewer_id = current_user["matrimony_id"]
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+
+    try:
+        cur.execute("""
+            SELECT viewed_matrimony_id
+            FROM viewed_profiles
+            WHERE matrimony_id = %s
+        """, (viewer_id,))
+
+        rows = cur.fetchall()
+
+        # Extract valid profile IDs only
+        viewed_ids = []
+        for row in rows:
+            value = row["viewed_matrimony_id"]
+            if isinstance(value, str) and value.startswith("{"):
+                # Handle case where value is a string representation of a list
+                continue
+            viewed_ids.append(value)
+
+        return ViewedProfilesResponse(
+            success=True,
+            viewer_id=viewer_id,
+            viewed_profiles=viewed_ids
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve viewed profiles: {str(e)}")
+
+    finally:
+        cur.close()
+        conn.close()
+
 
 # Run the application
 if __name__ == "__main__":
