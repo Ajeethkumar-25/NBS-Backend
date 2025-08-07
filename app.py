@@ -3140,14 +3140,18 @@ async def get_matrimony_preferences(
             WHERE matrimony_id = %s
         """, [current_user.get("matrimony_id")])
         user_profile = cur.fetchone()
-
         if not user_profile:
             raise HTTPException(status_code=404, detail="User profile not found")
 
         user_gender = user_profile['gender'].strip().lower()
         opposite_gender = "female" if user_gender == "male" else "male"
+
         user_star = user_profile['nakshatra']
+        if not user_star or user_star.strip().lower() in ["null", "nan", "n/a", ""]:
+            raise HTTPException(status_code=404, detail="Invalid or missing user nakshatra in profile")
+
         preferred_nakshatra_list = []
+
 
         # Main query
         query = """
@@ -3195,7 +3199,7 @@ async def get_matrimony_preferences(
                 profile_dict["date_of_birth"] = dob.strftime('%Y-%m-%d')
 
             other_star = profile_dict.get("nakshatra")
-            if not other_star:
+            if not other_star or other_star.strip().lower() in ["null", "nan", "n/a", ""]:
                 continue
 
             if user_gender == "male":
@@ -3240,8 +3244,9 @@ async def get_matrimony_preferences(
             for profile in fallback_profiles:
                 profile_dict = dict(profile)
                 other_star = profile_dict.get("nakshatra")
-                if not other_star:
+                if not other_star or other_star.strip().lower() in ["null", "nan", "n/a", ""]:
                     continue
+
 
                 if user_gender == "male":
                     result = matcher.check_compatibility(user_star, other_star)
@@ -3263,6 +3268,13 @@ async def get_matrimony_preferences(
                     profile_dict["nakshatra_match_type"] = "Utthamam"
                     utthamam_matches.append(profile_dict)
 
+        if not compatible_profiles and not utthamam_matches:
+            return {
+                "message": "No matching profiles found. Nakshatra is missing or not compatible.",
+                "profiles": [],
+                "matching_profiles": []
+            }
+
         if not compatible_profiles:
             message = "No compatible profiles matched your preferences. Showing Utthamam matches instead."
         else:
@@ -3275,8 +3287,13 @@ async def get_matrimony_preferences(
         }
 
     except Exception as e:
-        print(f"Exception occurred: {e}")
-        raise HTTPException(status_code=500, detail="Error retrieving profiles")
+        print("Exception occurred:")
+        traceback.print_exc()
+        raise HTTPException(status_code=200, detail="User not Found, Null is not allowed in nakshatra. Please check your profile settings.")
+    except Exception as e:
+        print("Exception occurred:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Error while fetching matrimony preferences.")
     finally:
         cur.close()
         conn.close()
