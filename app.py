@@ -182,6 +182,10 @@ def is_user_blocked(matrimony_id: str) -> bool:
         cur.close()
         conn.close()
 
+#OTP_utils
+def generate_otp(length=6):
+    return ''.join([str(random.randint(0, 9)) for _ in range(length)])
+
 # Models
 
 class UserCreate(BaseModel):
@@ -410,7 +414,6 @@ class OTPRequest(BaseModel):
 
 class OTPVerify(BaseModel):
     mobile_number: str
-    full_name: str
     otp: str
 
 class FrameDetails(BaseModel):
@@ -2416,91 +2419,56 @@ async def create_admin_product_frame(
         conn.close()
 
 # Matrimony Endpoints
-@app.post("/matrimony/send-otp", response_model=Dict[str, Any])
+@app.post("/matrimony/send-otp")
 async def send_otp(request: OTPRequest):
-    logger.info(f"Received OTPRequest: {request}")
-    mobile_number = request.mobile_number
-    full_name = request.full_name  # This should be available now
-    otp = generate_otp()
+    otp = "1234"  # ✅ Hardcoded OTP for testing
     expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
-    
-    # Save OTP and full_name to PostgreSQL
+
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Delete any existing OTP for the mobile number
-        cur.execute(
-            "DELETE FROM otp_storage WHERE mobile_number = %s",
-            (mobile_number,)
-        )
-        
-        # Insert new OTP and full_name
-        cur.execute(
-            """
+        cur.execute("DELETE FROM otp_storage WHERE mobile_number = %s", (request.mobile_number,))
+        cur.execute("""
             INSERT INTO otp_storage (mobile_number, full_name, otp, expires_at)
             VALUES (%s, %s, %s, %s)
-            """,
-            (mobile_number, full_name, otp, expires_at)
-        )
+        """, (request.mobile_number, request.full_name, otp, expires_at))
         conn.commit()
-        
-        # Send OTP via Twilio
-        try:
-            message = twilio_client.messages.create(
-                body=f"Your OTP is {otp}. It will expire in 5 minutes.",
-                from_=TWILIO_PHONE_NUMBER,
-                to=mobile_number
-            )
-            logger.info(f"OTP sent to {mobile_number}: {otp}")
-            return {"message": "OTP sent successfully", "mobile_number": mobile_number, "full_name": full_name}
-        except Exception as e:
-            logger.error(f"Failed to send OTP via Twilio: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to send OTP: {str(e)}")
+
+        print(f"[DEV LOG] OTP for {request.mobile_number}: {otp}")
+
+        return {"message": "OTP generated and saved", "mobile_number": request.mobile_number}
     except Exception as e:
         conn.rollback()
-        logger.error(f"Database error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         cur.close()
         conn.close()
 
-@app.post("/matrimony/verify-otp", response_model=Dict[str, Any])
+@app.post("/matrimony/verify-otp")
 async def verify_otp(request: OTPVerify):
-    mobile_number = request.mobile_number
-    otp = request.otp
-    full_name = request.full_name  # Added full_name
-    
-    # Fetch OTP and full_name from PostgreSQL
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """
-            SELECT otp, full_name, expires_at FROM otp_storage
-            WHERE mobile_number = %s AND expires_at > NOW()
-            """,
-            (mobile_number,)
-        )
-        db_otp = cur.fetchone()
-        
-        if not db_otp or db_otp[0] != otp or db_otp[1] != full_name:
-            raise HTTPException(status_code=400, detail="Invalid OTP or full name")
-        
-        # Delete OTP after verification
-        cur.execute(
-            "DELETE FROM otp_storage WHERE mobile_number = %s",
-            (mobile_number,)
-        )
-        conn.commit()
-        
-        return {"message": "OTP verified successfully", "mobile_number": mobile_number, "full_name": full_name}
+        cur.execute("""
+            SELECT otp, expires_at FROM otp_storage WHERE mobile_number = %s
+        """, (request.mobile_number,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=400, detail="OTP not found")
+
+        stored_otp, expires_at = row
+        if stored_otp != request.otp:
+            raise HTTPException(status_code=400, detail="Invalid OTP")
+        if datetime.utcnow() > expires_at:
+            raise HTTPException(status_code=400, detail="OTP expired")
+
+        return {"message": "OTP verified successfully"}
     except Exception as e:
-        conn.rollback()
-        logger.error(f"Database error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
     finally:
         cur.close()
         conn.close()
+
              
 def convert_empty_to_none(value):
     """ Convert empty strings to None (NULL in PostgreSQL) """
