@@ -3247,7 +3247,6 @@ async def get_matrimony_preferences(
                 if not other_star or other_star.strip().lower() in ["null", "nan", "n/a", ""]:
                     continue
 
-
                 if user_gender == "male":
                     result = matcher.check_compatibility(user_star, other_star)
                 else:
@@ -3267,13 +3266,6 @@ async def get_matrimony_preferences(
                     profile_dict["nakshatra_match_score"] = result["combined_score"]
                     profile_dict["nakshatra_match_type"] = "Utthamam"
                     utthamam_matches.append(profile_dict)
-
-        if not compatible_profiles and not utthamam_matches:
-            return {
-                "message": "No matching profiles found. Nakshatra is missing or not compatible.",
-                "profiles": [],
-                "matching_profiles": []
-            }
 
         if not compatible_profiles:
             message = "No compatible profiles matched your preferences. Showing Utthamam matches instead."
@@ -3358,29 +3350,16 @@ async def get_matrimony_preferences_admin(
             """
             params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
 
-            # Add rashi filter if preferred_rashi exists
-            if user_profile.get('preferred_rashi'):
-                preferred_rashi_list = [r.strip() for r in user_profile['preferred_rashi'].split(",") if r.strip()]
-                if preferred_rashi_list:
-                    query += " AND rashi IS NOT NULL"
-                    if case_sensitive:
-                        query += " AND rashi = ANY(%s)"
-                        params.append(preferred_rashi_list)
-                    else:
-                        query += " AND LOWER(rashi) = ANY(%s)"
-                        params.append([r.lower() for r in preferred_rashi_list])
-
             # Add nakshatra filter if preferred_nakshatra exists
             if user_profile.get('preferred_nakshatra'):
                 preferred_nakshatra_list = [n.strip() for n in user_profile['preferred_nakshatra'].split(",") if n.strip()]
-                if preferred_nakshatra_list:
-                    query += " AND nakshatra IS NOT NULL"
-                    if case_sensitive:
-                        query += " AND nakshatra = ANY(%s)"
-                        params.append(preferred_nakshatra_list)
-                    else:
-                        query += " AND LOWER(nakshatra) = ANY(%s)"
-                        params.append([n.lower() for n in preferred_nakshatra_list])
+            if preferred_nakshatra_list:
+                if case_sensitive:
+                    query += " AND (nakshatra IS NOT NULL AND nakshatra = ANY(%s))"
+                    params.append(preferred_nakshatra_list)
+                else:
+                    query += " AND (nakshatra IS NOT NULL AND LOWER(nakshatra) = ANY(%s))"
+                    params.append([n.lower() for n in preferred_nakshatra_list])
 
             cur.execute(query, params)
             results = cur.fetchall()
@@ -3534,7 +3513,23 @@ async def get_matrimony_preferences(
         user_gender = user_profile['gender'].strip()
         opposite_gender = "Male" if user_gender.lower() == "female" else "Female"
 
-        # Base query with strict work_location filtering
+        # Validate preferred_location
+        preferred_location = str(user_profile.get("preferred_location")).strip()
+        invalid_values = {"", "null", "None", "none", "Null", "NaN", "n/a", "N/A"}
+        if not preferred_location or preferred_location in invalid_values:
+            return MatrimonyProfilesWithMessage(
+                message="No profiles matched due to invalid or missing preferred_location.",
+                profiles=[]
+            )
+
+        preferred_location_list = [loc.strip() for loc in preferred_location.split(",") if loc.strip()]
+        if not preferred_location_list:
+            return MatrimonyProfilesWithMessage(
+                message="No profiles matched due to empty preferred_location list.",
+                profiles=[]
+            )
+
+        # Base query
         query = """
             SELECT * FROM matrimony_profiles
             WHERE gender ILIKE %s
@@ -3549,20 +3544,17 @@ async def get_matrimony_preferences(
                 SELECT blocked_matrimony_id 
                 FROM blocked_users 
                 WHERE admin_matrimony_id = %s
-              )
+            )
         """
         params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
 
-        # Apply location preference filtering
-        if user_profile['preferred_location']:
-            preferred_location_list = [l.strip() for l in user_profile['preferred_location'].split(",") if l.strip()]
-            if preferred_location_list:
-                if case_sensitive:
-                    query += " AND work_location = ANY(%s)"
-                    params.append(preferred_location_list)
-                else:
-                    query += " AND LOWER(work_location) = ANY(%s)"
-                    params.append([loc.lower() for loc in preferred_location_list])
+        # Add location preference condition
+        if case_sensitive:
+            query += " AND (work_location = ANY(%s))"
+            params.append(preferred_location_list)
+        else:
+            query += " AND (LOWER(work_location) = ANY(%s))"
+            params.append([loc.lower() for loc in preferred_location_list])
 
         cur.execute(query, params)
         profiles = cur.fetchall()
@@ -3571,20 +3563,18 @@ async def get_matrimony_preferences(
         for profile in profiles:
             profile_dict = dict(profile)
 
-            # Process media fields
+            # Process media
             profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
             profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
             profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
 
-            # Format date_of_birth
+            # Format dates
             if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                 profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
-
-            # Format birth_time
             if isinstance(profile_dict.get("birth_time"), time):
                 profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
-            # Calculate age
+            # Age calculation
             if profile_dict.get("date_of_birth"):
                 dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
                 today = datetime.today()
@@ -3597,7 +3587,6 @@ async def get_matrimony_preferences(
             profiles=compatible_profiles
         )
 
-
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
 
@@ -3605,149 +3594,65 @@ async def get_matrimony_preferences(
         cur.close()
         conn.close()
 
-# In Admin POV: get  /matrimony/admin/location-preference --
-@app.get("/matrimony/admin/location-preference", response_model=List[Dict[str, Any]])
-async def get_all_location_preferences(
+# Admin Endpoint to get matrimony profiles based on location preference
+@app.get("/matrimony/admin/location-preference", response_model=MatrimonyProfilesWithMessage)
+async def get_admin_location_preference_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
-    case_sensitive: Optional[bool] = Query(default=False)
+    case_sensitive: Optional[bool] = Query(default=False),
 ):
     if is_user_blocked(current_user.get("matrimony_id")):
         raise HTTPException(status_code=403, detail="Access denied. You have been blocked by admin.")
 
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
-
-    def process_s3_url(url, folder_name):
-        if url and isinstance(url, str):
-            if url.startswith("http"):
-                return url
-            return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
-        return None
-
-    def process_s3_urls(value, folder_name):
-        if not value:
-            return None
-        if isinstance(value, str):
-            items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
-        elif isinstance(value, list):
-            items = value
-        else:
-            return None
-        return [
-            item if item.startswith("http") else
-            f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
-            for item in items
-        ]
-
-    def fetch_location_matches(user_profile):
-        try:
-            gender = user_profile['gender'].strip()
-            opposite_gender = "Male" if gender.lower() == "female" else "Female"
-
-            query = """
-                SELECT * FROM matrimony_profiles
-                WHERE gender ILIKE %s
-                AND matrimony_id != %s
-                AND TRIM(work_location) IS NOT NULL
-                AND TRIM(work_location) != ''
-                AND LOWER(TRIM(work_location)) != 'null'
-                AND is_active = TRUE
-                AND is_verified = TRUE
-                AND verification_status = 'approve'
-                AND matrimony_id NOT IN (
-                    SELECT blocked_matrimony_id 
-                    FROM blocked_users 
-                    WHERE admin_matrimony_id = %s
-                  )
-            """
-            params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
-
-            if user_profile.get('preferred_location'):
-                preferred_locations = [loc.strip() for loc in user_profile['preferred_location'].split(",") if loc.strip()]
-                if preferred_locations:
-                    if case_sensitive:
-                        query += " AND work_location = ANY(%s)"
-                        params.append(preferred_locations)
-                    else:
-                        query += " AND LOWER(work_location) = ANY(%s)"
-                        params.append([loc.lower() for loc in preferred_locations])
-
-            cur.execute(query, params)
-            results = cur.fetchall()
-
-            compatible_profiles = []
-            for profile in results:
-                profile_dict = dict(profile)
-                profile_dict.pop("password", None)
-                profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
-                profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
-                profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
-
-                if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
-                    profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
-
-                if isinstance(profile_dict.get("birth_time"), time):
-                    profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
-
-                if profile_dict.get("date_of_birth"):
-                    dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
-                    today = datetime.today()
-                    profile_dict["age"] = str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
-
-                try:
-                    profile_model = MatrimonyProfileResponse(**profile_dict)
-                    compatible_profiles.append(profile_model.dict())
-                except Exception as e:
-                    print("Validation error:", e)
-                    print("Bad profile:", profile_dict)
-
-            # Format user profile
-            formatted_user_profile = dict(user_profile)
-            formatted_user_profile.pop("password", None)
-            if isinstance(formatted_user_profile.get("date_of_birth"), (datetime, date)):
-                formatted_user_profile["date_of_birth"] = formatted_user_profile["date_of_birth"].strftime('%Y-%m-%d')
-            if isinstance(formatted_user_profile.get("birth_time"), time):
-                formatted_user_profile["birth_time"] = formatted_user_profile["birth_time"].strftime('%H:%M:%S')
-
-            return {
-                "message": f"{user_profile['full_name']} ({user_profile['matrimony_id']}), {len(compatible_profiles)} location-based profiles found.",
-                "user_profile": formatted_user_profile,
-                "profile_details": compatible_profiles
-            }
-
-        except Exception as e:
-            print(f"Error for user {user_profile.get('matrimony_id', 'UNKNOWN')}: {e}")
-            return {
-                "message": f"{user_profile.get('full_name', 'Unknown')} ({user_profile.get('matrimony_id', 'N/A')}), profile error occurred",
-                "user_profile": user_profile,
-                "profile_details": []
-            }
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     try:
-        cur.execute("SELECT * FROM matrimony_profiles WHERE is_active = TRUE")
-        all_users = cur.fetchall()
+        cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (current_user["matrimony_id"],))
+        user_profile = cur.fetchone()
 
-        response_data = []
-        for user in all_users:
-            try:
-                print(f"Processing user: {user['matrimony_id']}")
-                result = fetch_location_matches(user)
-                response_data.append(result)
-            except Exception as inner_e:
-                print(f"Skipping user {user['matrimony_id']}: {inner_e}")
-                continue
+        if not user_profile:
+            return MatrimonyProfilesWithMessage(message="User profile not found", profiles=[])
 
-        return response_data
+        user_gender = user_profile["gender"]
+        preferred_location = user_profile.get("preferred_location")
 
-    except Exception as e:
-        print("Top-level error:", e)
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Something went wrong")
+        invalid_location_values = [None, "", "null", "Null", "NULL", "NaN", "n/a", "N/A", "none", "None"]
+        if str(preferred_location).strip() in invalid_location_values:
+            return MatrimonyProfilesWithMessage(message="No profiles matched due to invalid or missing preferred_location.", profiles=[])
+
+        preferred_location_list = [loc.strip() for loc in preferred_location.split(",") if loc.strip()]
+        if not preferred_location_list:
+            return MatrimonyProfilesWithMessage(message="No profiles matched due to empty preferred_location values.", profiles=[])
+
+        query = """
+            SELECT * FROM matrimony_profiles
+            WHERE gender != %s
+              AND is_verified = TRUE
+              AND matrimony_id NOT IN (
+                  SELECT blocked_id FROM blocked_profiles WHERE blocker_id = %s
+              )
+        """
+
+        params = [user_gender, current_user["matrimony_id"]]
+
+        if case_sensitive:
+            query += " AND (work_location IS NOT NULL AND work_location = ANY(%s))"
+            params.append(preferred_location_list)
+        else:
+            query += " AND (work_location IS NOT NULL AND LOWER(work_location) = ANY(%s))"
+            params.append([loc.lower() for loc in preferred_location_list])
+
+        cur.execute(query, params)
+        results = cur.fetchall()
+
+        if not results:
+            return MatrimonyProfilesWithMessage(message="No profiles matched your location preferences.", profiles=[])
+
+        return MatrimonyProfilesWithMessage(message="Profiles fetched successfully", profiles=results)
 
     finally:
         cur.close()
         conn.close()
-
 
 # User /matrimony/caste-preference
 @app.get("/matrimony/caste-preference", response_model=MatrimonyProfilesWithMessage)
@@ -3800,14 +3705,30 @@ async def get_matrimony_caste_preferences(
         user_gender = user_profile['gender'].strip()
         opposite_gender = "Male" if user_gender.lower() == "female" else "Female"
 
-        # Base query with caste filters
+        # Validate preferred_caste
+        preferred_caste = str(user_profile.get("preferred_caste")).strip()
+        invalid_values = {"", "null", "None", "none", "Null", "NaN", "n/a", "N/A"}
+        if not preferred_caste or preferred_caste in invalid_values:
+            return MatrimonyProfilesWithMessage(
+                message="No profiles matched due to invalid or missing preferred_caste.",
+                profiles=[]
+            )
+
+        preferred_caste_list = [caste.strip() for caste in preferred_caste.split(",") if caste.strip()]
+        if not preferred_caste_list:
+            return MatrimonyProfilesWithMessage(
+                message="No profiles matched due to empty preferred_caste list.",
+                profiles=[]
+            )
+
+        # Base query
         query = """
             SELECT * FROM matrimony_profiles
             WHERE gender ILIKE %s
             AND matrimony_id != %s
             AND TRIM(caste) IS NOT NULL
             AND TRIM(caste) != ''
-            AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
+            AND LOWER(TRIM(caste)) != 'null'
             AND is_active = TRUE
             AND is_verified = TRUE
             AND verification_status = 'approve'
@@ -3815,26 +3736,18 @@ async def get_matrimony_caste_preferences(
                 SELECT blocked_matrimony_id 
                 FROM blocked_users 
                 WHERE admin_matrimony_id = %s
-              )
+            )
         """
         params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
 
-        # Filter by preferred_caste
-        if user_profile.get('preferred_caste'):
-            preferred_castes = [
-                c.strip() for c in user_profile['preferred_caste'].split(',')
-                if c.strip().lower() not in ['null', 'none', 'nan', 'nil', 'not specified']
-            ]
-            if preferred_castes:
-                query += " AND caste IS NOT NULL"
-                if case_sensitive:
-                    query += " AND caste = ANY(%s)"
-                    params.append(preferred_castes)
-                else:
-                    query += " AND LOWER(caste) = ANY(%s)"
-                    params.append([c.lower() for c in preferred_castes])
+        # Add caste preference condition
+        if case_sensitive:
+            query += " AND (caste = ANY(%s))"
+            params.append(preferred_caste_list)
+        else:
+            query += " AND (LOWER(caste) = ANY(%s))"
+            params.append([caste.lower() for caste in preferred_caste_list])
 
-        # Execute
         cur.execute(query, params)
         profiles = cur.fetchall()
 
@@ -3848,7 +3761,6 @@ async def get_matrimony_caste_preferences(
 
             if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
                 profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
-
             if isinstance(profile_dict.get("birth_time"), time):
                 profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
 
@@ -3865,7 +3777,6 @@ async def get_matrimony_caste_preferences(
         )
 
     except Exception as e:
-        print("Error:", e)
         raise HTTPException(status_code=500, detail="Error retrieving caste preference profiles")
 
     finally:
@@ -3873,7 +3784,7 @@ async def get_matrimony_caste_preferences(
         conn.close()
 
 
-# In Admin POV:  get /matrimony/admin/caste-preference --
+# Admin Endpoint to get matrimony caste preferences
 @app.get("/matrimony/admin/caste-preference", response_model=List[Dict[str, Any]])
 async def get_admin_caste_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
@@ -3885,105 +3796,60 @@ async def get_admin_caste_preferences(
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
 
-    def process_s3_url(url, folder_name):
-        if url and isinstance(url, str):
-            if url.startswith("http"):
-                return url
-            return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
-        return None
-
-    def process_s3_urls(value, folder_name):
-        if not value:
-            return None
-        if isinstance(value, str):
-            items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
-        elif isinstance(value, list):
-            items = value
-        else:
-            return None
-        return [
-            item if item.startswith("http") else
-            f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
-            for item in items
-        ]
-
     def fetch_compatible_profiles(user_profile):
-        try:
-            gender = user_profile['gender'].strip()
-            opposite_gender = "Male" if gender.lower() == "female" else "Female"
+        gender = user_profile['gender'].strip()
+        opposite_gender = "Male" if gender.lower() == "female" else "Female"
 
-            query = """
-                SELECT * FROM matrimony_profiles
-                WHERE gender ILIKE %s
-                AND matrimony_id != %s
-                AND TRIM(caste) IS NOT NULL
-                AND TRIM(caste) != ''
-                AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
-                AND is_active = TRUE
-                AND is_verified = TRUE
-                AND verification_status = 'approve'
-                AND matrimony_id NOT IN (
-                    SELECT blocked_matrimony_id 
-                    FROM blocked_users 
-                    WHERE admin_matrimony_id = %s
-                )
-            """
-            params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
+        invalid_caste_values = [None, "", "null", "none", "nan", "nil", "not specified"]
+        preferred_castes = user_profile.get("preferred_caste")
 
-            if user_profile.get('preferred_caste'):
-                preferred_castes = [
-                    c.strip() for c in user_profile['preferred_caste'].split(',')
-                    if c.strip().lower() not in ['null', 'none', 'nan', 'nil', 'not specified']
-                ]
-                if preferred_castes:
-                    query += " AND caste IS NOT NULL"
-                    if case_sensitive:
-                        query += " AND caste = ANY(%s)"
-                        params.append(preferred_castes)
-                    else:
-                        query += " AND LOWER(caste) = ANY(%s)"
-                        params.append([c.lower() for c in preferred_castes])
-
-            cur.execute(query, params)
-            profiles = cur.fetchall()
-
-            compatible_profiles = []
-            for profile in profiles:
-                profile_dict = dict(profile)
-                profile_dict.pop("password", None)
-                profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
-                profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
-                profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
-
-                if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
-                    profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
-
-                if isinstance(profile_dict.get("birth_time"), time):
-                    profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
-
-                if profile_dict.get("date_of_birth"):
-                    dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
-                    today = datetime.today()
-                    profile_dict["age"] = str(today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day)))
-
-                profile_model = MatrimonyProfileResponse(**profile_dict)
-                compatible_profiles.append(profile_model.dict())
-
-            formatted_user_profile = dict(user_profile)
-            formatted_user_profile.pop("password", None)
+        if not preferred_castes or str(preferred_castes).strip().lower() in invalid_caste_values:
             return {
-                "message": f"{user_profile.get('full_name', 'User')} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} caste-based compatible profiles.",
-                "user_profile": formatted_user_profile,
-                "profile_details": compatible_profiles
-            }
-
-        except Exception as e:
-            print(f"Error processing {user_profile['matrimony_id']}: {e}")
-            return {
-                "message": f"{user_profile['matrimony_id']} - error occurred",
+                "message": f"{user_profile['matrimony_id']} - no valid preferred_caste",
                 "user_profile": user_profile,
                 "profile_details": []
             }
+
+        preferred_caste_list = [c.strip() for c in preferred_castes.split(",") if c.strip()]
+        if not preferred_caste_list:
+            return {
+                "message": f"{user_profile['matrimony_id']} - empty preferred_caste",
+                "user_profile": user_profile,
+                "profile_details": []
+            }
+
+        query = """
+            SELECT * FROM matrimony_profiles
+            WHERE gender ILIKE %s
+              AND matrimony_id != %s
+              AND is_active = TRUE
+              AND is_verified = TRUE
+              AND verification_status = 'approve'
+              AND TRIM(caste) IS NOT NULL
+              AND TRIM(caste) != ''
+              AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
+              AND matrimony_id NOT IN (
+                  SELECT blocked_matrimony_id FROM blocked_users WHERE admin_matrimony_id = %s
+              )
+        """
+
+        params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
+
+        if case_sensitive:
+            query += " AND (caste IS NOT NULL AND caste = ANY(%s))"
+            params.append(preferred_caste_list)
+        else:
+            query += " AND (caste IS NOT NULL AND LOWER(caste) = ANY(%s))"
+            params.append([c.lower() for c in preferred_caste_list])
+
+        cur.execute(query, params)
+        profiles = cur.fetchall()
+
+        return {
+            "message": f"{user_profile.get('full_name', 'User')} ({user_profile['matrimony_id']}) - {len(profiles)} caste-based compatible profiles found.",
+            "user_profile": user_profile,
+            "profile_details": profiles
+        }
 
     try:
         cur.execute("SELECT * FROM matrimony_profiles WHERE is_active = TRUE")
@@ -3994,22 +3860,16 @@ async def get_admin_caste_preferences(
             try:
                 result = fetch_compatible_profiles(user)
                 response_data.append(result)
-            except Exception as inner_e:
-                print(f"Skipping user {user['matrimony_id']}: {inner_e}")
-                continue
+            except Exception as e:
+                print(f"Error processing {user['matrimony_id']}: {e}")
 
         return response_data
-
-    except Exception as e:
-        print("Top-level error:", e)
-        raise HTTPException(status_code=500, detail="Failed to fetch caste preferences for all users")
 
     finally:
         cur.close()
         conn.close()
 
 # overall admin view preference, location, caste preference
-
 @app.get("/matrimony/admin/preference-overview")
 async def get_combined_preferences(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
