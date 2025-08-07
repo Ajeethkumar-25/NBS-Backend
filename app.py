@@ -3133,6 +3133,7 @@ async def get_matrimony_preferences(
         ]
 
     try:
+        # Fetch current user profile
         cur.execute("""
             SELECT matrimony_id, full_name, gender, nakshatra, preferred_nakshatra
             FROM matrimony_profiles 
@@ -3145,8 +3146,10 @@ async def get_matrimony_preferences(
 
         user_gender = user_profile['gender'].strip().lower()
         opposite_gender = "female" if user_gender == "male" else "male"
-        Male_star = user_profile['nakshatra']
+        user_star = user_profile['nakshatra']
+        preferred_nakshatra_list = []
 
+        # Main query
         query = """
             SELECT * FROM matrimony_profiles
             WHERE LOWER(gender) = %s
@@ -3191,14 +3194,14 @@ async def get_matrimony_preferences(
                 profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
                 profile_dict["date_of_birth"] = dob.strftime('%Y-%m-%d')
 
-            Female_star = profile_dict.get("nakshatra")
-            if not Female_star:
+            other_star = profile_dict.get("nakshatra")
+            if not other_star:
                 continue
 
             if user_gender == "male":
-                result = matcher.check_compatibility(Male_star, Female_star)
+                result = matcher.check_compatibility(user_star, other_star)
             else:
-                result = matcher.check_compatibility(Female_star, Male_star)
+                result = matcher.check_compatibility(other_star, user_star)
 
             profile_dict["nakshatra_match_score"] = result["combined_score"]
             profile_dict["nakshatra_match_type"] = (
@@ -3207,12 +3210,18 @@ async def get_matrimony_preferences(
                 "Not Compatible"
             )
 
+            profile_dict["preferred_nakshatra_match"] = (
+                other_star.strip().lower() in [n.lower() for n in preferred_nakshatra_list]
+                if preferred_nakshatra_list else False
+            )
+
             compatible_profiles.append(profile_dict)
+
             if result["is_utthamam"]:
                 utthamam_matches.append(profile_dict)
 
+        # If no profiles found, fallback to show utthamam matches from all
         if not compatible_profiles:
-            # Fallback: Fetch all utthamam matches from full DB
             cur.execute("""
                 SELECT * FROM matrimony_profiles
                 WHERE LOWER(gender) = %s
@@ -3226,18 +3235,18 @@ async def get_matrimony_preferences(
                     WHERE admin_matrimony_id = %s
                 )
             """, [opposite_gender, user_profile['matrimony_id'], current_user['matrimony_id']])
-
             fallback_profiles = cur.fetchall()
+
             for profile in fallback_profiles:
                 profile_dict = dict(profile)
-                Female_star = profile_dict.get("nakshatra")
-                if not Female_star:
+                other_star = profile_dict.get("nakshatra")
+                if not other_star:
                     continue
 
                 if user_gender == "male":
-                    result = matcher.check_compatibility(Male_star, Female_star)
+                    result = matcher.check_compatibility(user_star, other_star)
                 else:
-                    result = matcher.check_compatibility(Female_star, Male_star)
+                    result = matcher.check_compatibility(other_star, user_star)
 
                 if result["is_utthamam"]:
                     profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photo")
@@ -3255,9 +3264,9 @@ async def get_matrimony_preferences(
                     utthamam_matches.append(profile_dict)
 
         if not compatible_profiles:
-            message = f"No compatible profiles matched your preferences. Showing Utthamam matches instead."
+            message = "No compatible profiles matched your preferences. Showing Utthamam matches instead."
         else:
-            message = f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found"
+            message = f"{user_profile['full_name']} ({user_profile['matrimony_id']}), you have {len(compatible_profiles)} compatible profiles found."
 
         return {
             "message": message,
@@ -3265,14 +3274,13 @@ async def get_matrimony_preferences(
             "matching_profiles": utthamam_matches
         }
 
-
     except Exception as e:
         print(f"Exception occurred: {e}")
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
     finally:
         cur.close()
         conn.close()
-
+        
 # In Admin POV: get Method matrimony/preference updated -----------------
 @app.get("/matrimony/admin/preference", response_model=List[Dict[str, Any]])
 async def get_matrimony_preferences_admin(
