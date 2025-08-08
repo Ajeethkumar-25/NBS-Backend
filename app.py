@@ -99,7 +99,7 @@ app.mount("/static/horoscopes", StaticFiles(directory=horoscopes_dir), name="sta
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://admin.newbrindha.com", "https://newbrindha.com", "http://admin.newbrindha.com", "http://newbrindha.com", "https://matrimony.newbrindha.com/", "http://matrimony.newbrindha.com/"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://admin.newbrindha.com", "https://newbrindha.com", "http://admin.newbrindha.com", "http://newbrindha.com", "https://matrimony.newbrindha.com", "http://matrimony.newbrindha.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
