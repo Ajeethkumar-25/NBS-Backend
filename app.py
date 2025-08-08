@@ -2891,9 +2891,6 @@ async def get_matrimony_profiles(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
     language: Optional[str] = Query("en", description="Language for response (e.g., 'en', 'ta')"),
 ):
-    if is_user_blocked(current_user.get("matrimony_id")):
-        raise HTTPException(status_code=200, detail="Access denied. You have been blocked by admin.")
-    logger.info(f"Fetching matrimony profiles for user: {current_user['matrimony_id']}")
 
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -5653,13 +5650,17 @@ def get_dashboard_overview(
 @app.post("/admin/profile/verify")
 async def verify_profile(
     matrimony_id: str = Form(...),
-    verification_status: str = Form(...),  # values: "approve", "pending"
+    verification_status: str = Form(None) ,  # values: "approve", "pending"
     verification_comment: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user_matrimony)
 ):
     if current_user.get("user_type") != "admin":
         raise HTTPException(status_code=403, detail="Admin access only")
-
+    
+    #Validate verification_status Default is None 
+    if verification_status is None:
+        verification_status = "pending"
+    
     if verification_status not in ["approve", "pending"]:
         raise HTTPException(status_code=400, detail="Invalid verification_status")
 
@@ -5682,7 +5683,7 @@ async def verify_profile(
     cur.close()
     conn.close()
 
-    return {"message": f"Profile {'approved' if verification_status == 'approve' else 'pendinged'} successfully"}
+    return {"message": f"Profile {'approved' if verification_status == 'approve' else 'pending'} successfully"}
 
 # ------------------- Get Unverified Profiles ------------------- 
 @app.get("/admin/profiles/unverified", response_model=AdminProfileVerificationSummary)
