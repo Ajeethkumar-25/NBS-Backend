@@ -3487,10 +3487,10 @@ async def get_matrimony_preferences(
 
         # Add location preference condition
         if case_sensitive:
-            query += " AND (work_location = ANY(%s))"
+            query += " AND (work_location IS NOT NULL AND work_location = ANY(%s))"
             params.append(preferred_location_list)
         else:
-            query += " AND (LOWER(work_location) = ANY(%s))"
+            query += " AND (work_location IS NOT NULL AND LOWER(work_location) = ANY(%s))"
             params.append([loc.lower() for loc in preferred_location_list])
 
         cur.execute(query, params)
@@ -3525,6 +3525,8 @@ async def get_matrimony_preferences(
         )
 
     except Exception as e:
+        traceback.print_exc()
+        logger.error(f"Error retrieving profiles: {e}")
         raise HTTPException(status_code=500, detail="Error retrieving profiles")
 
     finally:
@@ -3533,63 +3535,133 @@ async def get_matrimony_preferences(
 
 # Admin Endpoint to get matrimony profiles based on location preference
 @app.get("/matrimony/admin/location-preference", response_model=MatrimonyProfilesWithMessage)
-async def get_admin_location_preference_profiles(
+async def get_matrimony_location_preference_admin(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony),
-    case_sensitive: Optional[bool] = Query(default=False),
+    case_sensitive: Optional[bool] = Query(default=False)
 ):
-    if is_user_blocked(current_user.get("matrimony_id")):
-        raise HTTPException(status_code=403, detail="Access denied. You have been blocked by admin.")
+    # ✅ Admin check
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can access this endpoint.")
 
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = conn.cursor(cursor_factory=DictCursor)
+
+    def process_s3_url(url, folder_name):
+        if url and isinstance(url, str):
+            if url.startswith("http"):
+                return url
+            return f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{url}"
+        return None
+
+    def process_s3_urls(value, folder_name):
+        if not value:
+            return None
+        if isinstance(value, str):
+            items = [item.strip().strip('"') for item in value.strip('{}').split(',') if item.strip()]
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+        if not items:
+            return None
+        return [
+            item if item.startswith("http") else
+            f"https://{settings.AWS_S3_BUCKET_NAME}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{folder_name}/{item}"
+            for item in items
+        ]
 
     try:
-        cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (current_user["matrimony_id"],))
+        cur.execute("""
+            SELECT matrimony_id, preferred_location, gender
+            FROM matrimony_profiles 
+            WHERE matrimony_id = %s
+        """, [current_user.get("matrimony_id")])
         user_profile = cur.fetchone()
 
         if not user_profile:
-            return MatrimonyProfilesWithMessage(message="User profile not found", profiles=[])
+            raise HTTPException(status_code=404, detail="Admin profile not found")
 
-        user_gender = user_profile["gender"]
-        preferred_location = user_profile.get("preferred_location")
-
-        invalid_location_values = [None, "", "null", "Null", "NULL", "NaN", "n/a", "N/A", "none", "None"]
-        if str(preferred_location).strip() in invalid_location_values:
-            return MatrimonyProfilesWithMessage(message="No profiles matched due to invalid or missing preferred_location.", profiles=[])
+        preferred_location = (user_profile.get("preferred_location") or "").strip()
+        invalid_values = {"", "null", "None", "none", "Null", "NaN", "n/a", "N/A"}
+        if preferred_location in invalid_values:
+            return MatrimonyProfilesWithMessage(
+                message="No profiles matched due to invalid or missing preferred_location.",
+                profiles=[]
+            )
 
         preferred_location_list = [loc.strip() for loc in preferred_location.split(",") if loc.strip()]
         if not preferred_location_list:
-            return MatrimonyProfilesWithMessage(message="No profiles matched due to empty preferred_location values.", profiles=[])
+            return MatrimonyProfilesWithMessage(
+                message="No profiles matched due to empty preferred_location list.",
+                profiles=[]
+            )
+
+        opposite_gender = 'female' if user_profile['gender'].lower() == 'male' else 'male'
 
         query = """
             SELECT * FROM matrimony_profiles
-            WHERE gender != %s
-              AND is_verified = TRUE
-              AND matrimony_id NOT IN (
-                  SELECT blocked_id FROM blocked_profiles WHERE blocker_id = %s
-              )
+            WHERE gender ILIKE %s
+                AND matrimony_id != %s
+                AND is_active = TRUE
+                AND is_verified = TRUE
+                AND verification_status = 'approve'
+                AND TRIM(caste) IS NOT NULL
+                AND TRIM(caste) != ''
+                AND LOWER(TRIM(caste)) NOT IN ('null', 'none', 'nan', 'nil', 'not specified')
+                AND matrimony_id NOT IN (
+                    SELECT blocked_matrimony_id FROM blocked_users WHERE admin_matrimony_id = %s
+            )
         """
-
-        params = [user_gender, current_user["matrimony_id"]]
+        params = [opposite_gender, user_profile['matrimony_id'], user_profile['matrimony_id']]
 
         if case_sensitive:
-            query += " AND (work_location IS NOT NULL AND work_location = ANY(%s))"
+            query += " AND (work_location = ANY(%s))"
             params.append(preferred_location_list)
         else:
-            query += " AND (work_location IS NOT NULL AND LOWER(work_location) = ANY(%s))"
+            query += " AND (    LOWER(work_location) = ANY(%s))"
             params.append([loc.lower() for loc in preferred_location_list])
 
         cur.execute(query, params)
-        results = cur.fetchall()
+        profiles = cur.fetchall()
 
-        if not results:
-            return MatrimonyProfilesWithMessage(message="No profiles matched your location preferences.", profiles=[])
+        compatible_profiles = []
+        for profile in profiles:
+            profile_dict = dict(profile)
 
-        return MatrimonyProfilesWithMessage(message="Profiles fetched successfully", profiles=results)
+            # Media processing
+            profile_dict["photo"] = process_s3_url(profile_dict.get("photo_path"), "profile_photos")
+            profile_dict["photos"] = process_s3_urls(profile_dict.get("photos"), "photos")
+            profile_dict["horoscope_documents"] = process_s3_urls(profile_dict.get("horoscope_documents"), "horoscopes")
+
+            # Date formatting
+            if isinstance(profile_dict.get("date_of_birth"), (datetime, date)):
+                profile_dict["date_of_birth"] = profile_dict["date_of_birth"].strftime('%Y-%m-%d')
+            if isinstance(profile_dict.get("birth_time"), time):
+                profile_dict["birth_time"] = profile_dict["birth_time"].strftime('%H:%M:%S')
+
+            # Age calculation
+            if profile_dict.get("date_of_birth"):
+                dob = datetime.strptime(profile_dict["date_of_birth"], '%Y-%m-%d')
+                today = datetime.today()
+                profile_dict["age"] = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+            compatible_profiles.append(MatrimonyProfileResponse(**profile_dict))
+
+        return MatrimonyProfilesWithMessage(
+            message=f"Admin view: {len(compatible_profiles)} location-based profiles found.",
+            profiles=compatible_profiles
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
     finally:
         cur.close()
         conn.close()
+
 
 # User /matrimony/caste-preference
 @app.get("/matrimony/caste-preference", response_model=MatrimonyProfilesWithMessage)
@@ -5658,10 +5730,9 @@ async def verify_profile(
 ):
     if current_user.get("user_type") != "admin":
         raise HTTPException(status_code=403, detail="Admin access only")
-    
     #Validate verification_status Default is None 
-    if verification_status is None:
-        verification_status = "pending"
+    if not verification_status:
+        raise HTTPException(status_code=400, detail="verification_status is required")
     
     if verification_status not in ["approve", "pending"]:
         raise HTTPException(status_code=400, detail="Invalid verification_status")
