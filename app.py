@@ -4374,8 +4374,11 @@ async def delete_profiles_by_admin(
         for matrimony_id in matrimony_ids:
             # Step 1: Archive profile before deletion
             cur.execute("""
-                INSERT INTO deleted_matrimony_profiles
-                SELECT *, CURRENT_TIMESTAMP AS deleted_at
+                INSERT INTO deleted_matrimony_profiles (
+                    matrimony_id, full_name, age, gender, deleted_at
+                )
+                SELECT 
+                    matrimony_id, full_name, age, gender, CURRENT_TIMESTAMP AS deleted_at
                 FROM matrimony_profiles
                 WHERE matrimony_id = %s;
             """, (matrimony_id,))
@@ -4418,9 +4421,8 @@ async def delete_profiles_by_admin(
 async def get_deleted_profiles_by_admin(
     current_user: Dict[str, Any] = Depends(get_current_user_matrimony)
 ):
-    if current_user["user_type"] not in ["user", "admin"]:
-        raise HTTPException(status_code=403, detail="Only users and admins can access this endpoint")
-
+    if current_user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can view deleted profiles")
     try:
         conn = psycopg2.connect(**settings.DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
