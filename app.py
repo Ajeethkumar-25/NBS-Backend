@@ -4034,25 +4034,32 @@ async def get_matrimony_preference_overview(
         cur.execute("SELECT * FROM matrimony_profiles WHERE is_active = TRUE")
         all_users = cur.fetchall()
 
-        # ✅ New structure
         user_profiles = []
-        preference_profiles = {}
-        location_profiles = {}
+        preference_matches = []
+        location_matches = []
 
         for user in all_users:
             formatted_user = format_profile(user)
             user_profiles.append(formatted_user)
 
-            for match in fetch_matches(user, "nakshatra"):
-                preference_profiles[match["matrimony_id"]] = match
+            # Nakshatra preference
+            nakshatra_profiles = fetch_matches(user, "nakshatra")
+            preference_matches.append({
+                "message": f"Compatible nakshatra matches for {user['matrimony_id']}",
+                "profiles": nakshatra_profiles
+            })
 
-            for match in fetch_matches(user, "location"):
-                location_profiles[match["matrimony_id"]] = match
+            # Location preference
+            location_profiles = fetch_matches(user, "location")
+            location_matches.append({
+                "message": f"Compatible location matches for {user['matrimony_id']}",
+                "profiles": location_profiles
+            })
 
         return {
             "user_profiles": user_profiles,
-            "preference": list(preference_profiles.values()),
-            "location_preference": list(location_profiles.values())
+            "preference": preference_matches,
+            "location_preference": location_matches
         }
 
     except Exception as e:
@@ -4063,7 +4070,8 @@ async def get_matrimony_preference_overview(
     finally:
         cur.close()
         conn.close()
-        
+
+
 # Endpoint to send push notifications
 @app.post("/send-notification", response_model=Dict[str, Any])
 async def send_notification(
