@@ -815,10 +815,9 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
 def create_refresh_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(days=7))
-    to_encode.update({"exp": expire, "token_type": "refresh"})
+    to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.REFRESH_SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
-
 
 # Function to store refresh token in the database
 async def store_refresh_token(conn, matrimony_id: int, refresh_token: str):
@@ -3110,15 +3109,21 @@ async def get_matrimony_preferences(
         """, [current_user.get("matrimony_id")])
         user_profile = cur.fetchone()
         if not user_profile:
-            raise HTTPException(status_code=404, detail="User profile not found")
-
+            return {
+                "message": "No profiles matched because user profile not found.",
+                "profiles": [],
+                "matching_profiles": []
+            }
         user_gender = user_profile['gender'].strip().lower()
         opposite_gender = "female" if user_gender == "male" else "male"
 
         user_star = user_profile['nakshatra']
         if not user_star or user_star.strip().lower() in ["null", "nan", "n/a", ""]:
-            raise HTTPException(status_code=404, detail="Invalid or missing user nakshatra in profile")
-
+            return {
+                "message": "No profiles matched due to invalid or missing nakshatra.",
+                "profiles": [],
+                "matching_profiles": []
+            }
         preferred_nakshatra_list = []
 
         # Main query (user preferences)
@@ -3212,7 +3217,11 @@ async def get_matrimony_preferences(
             profile_dict = dict(profile)
             other_star = profile_dict.get("nakshatra")
             if not other_star or other_star.strip().lower() in ["null", "nan", "n/a", ""]:
-                continue
+                return {
+                "message": "No profiles matched due to invalid or missing nakshatra.",
+                "profiles": [],
+                "matching_profiles": []
+            }
 
             if user_gender == "male":
                 result = matcher.check_compatibility(user_star, other_star)
@@ -3477,14 +3486,14 @@ async def get_matrimony_preferences(
         if not preferred_location or preferred_location in invalid_values:
             return MatrimonyProfilesWithMessage(
                 message="No profiles matched due to invalid or missing preferred_location.",
-                profiles=[]
+                profile_details=[]
             )
 
         preferred_location_list = [loc.strip() for loc in preferred_location.split(",") if loc.strip()]
         if not preferred_location_list:
             return MatrimonyProfilesWithMessage(
                 message="No profiles matched due to empty preferred_location list.",
-                profiles=[]
+                profile_details=[]
             )
 
         # Base query
@@ -3542,7 +3551,7 @@ async def get_matrimony_preferences(
 
         return MatrimonyProfilesWithMessage(
             message=f"{user_profile['matrimony_id']}, {len(compatible_profiles)} location-based profiles found.",
-            profiles=compatible_profiles
+            profile_details=compatible_profiles
         )
 
     except Exception as e:
