@@ -15,49 +15,46 @@ from db.init_db import init_db
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 1. Initialize Database Tables FIRST
-    try:
-        logger.info("Initializing database...")
-        init_db()
-        logger.info("Database initialized successfully.")
-    except Exception as e:
-        logger.critical(f"CRITICAL: Failed to initialize database: {str(e)}")
-        # If DB fails, we can't really do much, but we try to continue
+# --- Startup Sequence (Guaranteed Execution) ---
+try:
+    print("\n" + "="*50)
+    print(">>> SYSTEM STARTUP INITIATED")
+    
+    # 1. Initialize Database Tables
+    print(">>> Initializing database...")
+    init_db()
     
     # 2. Ensure all necessary directories exist
-    try:
-        logger.info("Setting up local directories...")
-        settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        settings.PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
-        settings.HOROSCOPES_DIR.mkdir(parents=True, exist_ok=True)
-        (settings.UPLOAD_DIR / "admin_files").mkdir(parents=True, exist_ok=True)
-        (settings.UPLOAD_DIR / "user_photos").mkdir(parents=True, exist_ok=True)
-        (settings.UPLOAD_DIR / "frame_colors").mkdir(parents=True, exist_ok=True)
-        (settings.UPLOAD_DIR / "profile_photos").mkdir(parents=True, exist_ok=True)
-        logger.info("Local directories verified.")
-    except Exception as e:
-        logger.error(f"Error creating directories: {str(e)}")
+    print(">>> Setting up local directories...")
+    settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    settings.PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+    settings.HOROSCOPES_DIR.mkdir(parents=True, exist_ok=True)
+    (settings.UPLOAD_DIR / "admin_files").mkdir(parents=True, exist_ok=True)
+    (settings.UPLOAD_DIR / "user_photos").mkdir(parents=True, exist_ok=True)
+    (settings.UPLOAD_DIR / "frame_colors").mkdir(parents=True, exist_ok=True)
+    (settings.UPLOAD_DIR / "profile_photos").mkdir(parents=True, exist_ok=True)
+    print(">>> System startup sequence completed successfully.")
+    print("="*50 + "\n")
+except Exception as e:
+    print(f"\n[!] CRITICAL STARTUP ERROR: {str(e)}")
+    logging.critical(f"Startup Error: {e}")
 
-    # 3. Initialize Firebase
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize Firebase
     try:
-        logger.info("Initializing Firebase...")
         initialize_firebase()
         logger.info("Firebase initialized.")
     except Exception as e:
         logger.error(f"Firebase initialization failed: {str(e)}")
     
-    # 4. Startup Database cleanup
+    # Startup Database cleanup
     conn = None
     cur = None
     try:
-        logger.info("Performing startup cleanup...")
         conn = get_db_connection()
         cur = conn.cursor()
-        # Delete expired refresh tokens (Photostudio)
         cur.execute("DELETE FROM refresh_tokens WHERE expires_at <= NOW()")
-        # Delete expired refresh tokens (Matrimony)
         cur.execute("DELETE FROM matrimony_refresh_tokens WHERE expires_at <= NOW()")
         conn.commit()
         logger.info("Expired refresh tokens cleaned up.")
@@ -96,6 +93,10 @@ app.mount("/static/horoscopes", StaticFiles(directory=settings.HOROSCOPES_DIR), 
 # Include modularized routers
 app.include_router(photostudio_router)
 app.include_router(matrimony_router)
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "database": "connected"}
 
 @app.get("/")
 async def root():

@@ -36,7 +36,7 @@ class Settings:
         "access_key": os.getenv("AWS_ACCESS_KEY_ID"),
         "secret_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
         "region": os.getenv("AWS_REGION"),
-        "bucket_name": os.getenv("AWS_STORAGE_BUCKET_NAME")
+        "bucket_name": os.getenv("AWS_S3_BUCKET")
     }
 
 settings = Settings()

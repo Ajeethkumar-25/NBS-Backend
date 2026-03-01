@@ -283,6 +283,7 @@ def init_db():
         for command in commands:
             cur.execute(command)
         conn.commit()
+        print("[✓] Database initialized successfully with all tables.")
         logger.info("Database initialized successfully with all tables.")
     except Exception as e:
         conn.rollback()
