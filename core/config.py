@@ -32,4 +32,11 @@ class Settings:
     
     BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
+    AWS_CONFIG = {
+        "access_key": os.getenv("AWS_ACCESS_KEY_ID"),
+        "secret_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
+        "region": os.getenv("AWS_REGION"),
+        "bucket_name": os.getenv("AWS_STORAGE_BUCKET_NAME")
+    }
+
 settings = Settings()

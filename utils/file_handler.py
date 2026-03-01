@@ -1,77 +1,96 @@
-import os
-import shutil
+import boto3
 import logging
+from botocore.exceptions import NoCredentialsError, ClientError
 from fastapi import UploadFile, HTTPException
 from core.config import settings
 
 class FileHandler:
     def __init__(self):
-        self.upload_base = str(settings.UPLOAD_DIR)
+        self.s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=settings.AWS_CONFIG["access_key"],
+            aws_secret_access_key=settings.AWS_CONFIG["secret_key"],
+            region_name=settings.AWS_CONFIG["region"]
+        )
+        self.bucket_name = settings.AWS_CONFIG["bucket_name"]
+        
+        # Allowed extensions
+        self.ALLOWED_EXTENSIONS = {
+            "profile_photos": ["jpg", "jpeg", "png", "webp"],
+            "photos": ["jpg", "jpeg", "png", "webp"],
+            "horoscopes": ["pdf"]
+        }
+
+    def _validate_file(self, filename: str, folder: str):
+        ext = filename.split(".")[-1].lower() if "." in filename else ""
+        allowed = self.ALLOWED_EXTENSIONS.get(folder, [])
+        if allowed and ext not in allowed:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid file type for {folder}. Allowed: {', '.join(allowed)}"
+            )
 
     def upload_file(self, file: UploadFile, folder: str) -> str:
-        """Uploads a file to local storage and returns the static file URL."""
+        """Uploads a file to AWS S3 and returns the public file URL."""
         try:
             filename = file.filename.strip().replace(" ", "_")
-            folder_path = os.path.join(self.upload_base, folder)
-            os.makedirs(folder_path, exist_ok=True)
+            self._validate_file(filename, folder)
             
-            file_path = os.path.join(folder_path, filename)
+            s3_path = f"{folder}/{filename}"
             
             file.file.seek(0)
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            self.s3_client.upload_fileobj(
+                file.file,
+                self.bucket_name,
+                s3_path,
+                ExtraArgs={"ContentType": file.content_type}
+            )
 
-            # Return the static URL path
-            file_url = f"/static/{folder}/{filename}"
-            logging.info(f"File uploaded successfully: {file_url}")
+            # Construct the S3 Public URL
+            file_url = f"https://{self.bucket_name}.s3.{settings.AWS_CONFIG['region']}.amazonaws.com/{s3_path}"
+            logging.info(f"File uploaded to S3: {file_url}")
             return file_url
 
+        except NoCredentialsError:
+            logging.error("AWS credentials not found.")
+            raise HTTPException(status_code=500, detail="Cloud storage configuration error")
+        except ClientError as e:
+            logging.error(f"S3 Upload Error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"S3 Upload failed: {str(e)}")
         except Exception as e:
+            if isinstance(e, HTTPException): raise e
             logging.error(f"Failed to upload {file.filename}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
     def list_files(self, folder: str):
-        """Lists all files inside the specified local folder."""
+        """Lists files in an S3 folder."""
         try:
-            folder_path = os.path.join(self.upload_base, folder)
-            if os.path.exists(folder_path):
-                file_list = os.listdir(folder_path)
-                logging.info(f"Files in {folder}: {file_list}")
-                return file_list
-            else:
-                logging.info(f"No folder found at {folder}")
-                return []
-        except Exception as e:
-            logging.error(f"Error listing files: {str(e)}")
+            response = self.s3_client.list_objects_v2(Bucket=self.bucket_name, Prefix=f"{folder}/")
+            if "Contents" in response:
+                return [obj["Key"] for obj in response["Contents"]]
             return []
-        
-    def process_url(self, value, folder_name):
-        if value and isinstance(value, str) and value.strip():
-            items = value.replace("{", "").replace("}", "").split(',')
-            return [
-                f"/static/{folder_name}/{item.strip()}"
-                for item in items
-                if item.strip()
-            ]
-        return None
+        except Exception as e:
+            logging.error(f"Error listing files in S3: {str(e)}")
+            return []
 
     def delete_file(self, file_url: str):
-        """Deletes a file from local storage given its static URL."""
-        if not file_url.startswith("/static/"):
-            logging.error(f"Invalid file URL for deletion: {file_url}")
-            return
-
-        relative_path = file_url.replace("/static/", "")
-        file_path = os.path.join(self.upload_base, relative_path)
-
+        """Deletes a file from S3 given its public URL."""
         try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logging.info(f"Deleted {file_path}")
-            else:
-                logging.warning(f"File not found for deletion: {file_path}")
+            # Extract key from URL
+            # Expected format: https://bucket.s3.region.amazonaws.com/folder/filename
+            key = file_url.split(".com/")[-1]
+            self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
+            logging.info(f"Deleted S3 object: {key}")
         except Exception as e:
-            logging.error(f"Failed to delete {file_url}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+            logging.error(f"Failed to delete S3 file {file_url}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete file from S3: {str(e)}")
+
+    def process_url(self, value, folder_name):
+        """No changes needed as DB will store full S3 URLs now, 
+        but kept for backward compatibility if needed."""
+        if value and isinstance(value, str) and value.strip():
+            items = value.replace("{", "").replace("}", "").split(',')
+            return [item.strip() for item in items if item.strip()]
+        return None
 
 file_handler = FileHandler()

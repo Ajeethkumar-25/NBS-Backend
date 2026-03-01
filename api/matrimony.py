@@ -468,7 +468,9 @@ async def get_matrimony_profiles(
         # Local storage helpers
         def process_static_url(url, folder_name):
             if url and isinstance(url, str):
-                return url if url.startswith("/static/") else f"/static/{folder_name}/{url}"
+                if url.startswith("http"):
+                    return url
+                return f"/static/{folder_name}/{url}"
             return None
 
         def process_static_urls(value, folder_name):
@@ -483,7 +485,7 @@ async def get_matrimony_profiles(
             if not items:
                 return None
             return [
-                item if item.startswith("/static/") else f"/static/{folder_name}/{item}"
+                item if item.startswith("http") or item.startswith("/static/") else f"/static/{folder_name}/{item}"
                 for item in items
             ]
 
@@ -625,7 +627,7 @@ async def get_matrimony_preference_overview(
 
     def process_static_url(url, folder_name):
         if url and isinstance(url, str):
-            if url.startswith("/static/"):
+            if url.startswith("http"):
                 return url
             return f"/static/{folder_name}/{url}"
         return None
@@ -640,7 +642,7 @@ async def get_matrimony_preference_overview(
         else:
             return None
         return [
-            item if item.startswith("/static/") else
+            item if item.startswith("http") or item.startswith("/static/") else
             f"/static/{folder_name}/{item}"
             for item in items
         ]

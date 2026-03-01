@@ -16,9 +16,7 @@ from models.schemas import (
     GetFileUpdate, FileSelectionsRequest, UserCreate, UserLogin, Token, 
     EventForm, RefreshToken
 )
-from utils.file_handler import FileHandler
-
-file_handler = FileHandler()
+from utils.file_handler import file_handler
 router = APIRouter(prefix="/photostudio", tags=["Photostudio"])
 
 @router.post("/admin/register", response_model=Dict[str, Any])
