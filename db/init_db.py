@@ -166,7 +166,7 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS matrimony_refresh_tokens (
             id SERIAL PRIMARY KEY,
-            matrimony_id VARCHAR(50) REFERENCES matrimony_profiles(matrimony_id) ON DELETE CASCADE,
+            matrimony_id VARCHAR(50) UNIQUE REFERENCES matrimony_profiles(matrimony_id) ON DELETE CASCADE,
             token TEXT UNIQUE NOT NULL,
             expires_at TIMESTAMP NOT NULL,
             is_valid BOOLEAN DEFAULT TRUE,

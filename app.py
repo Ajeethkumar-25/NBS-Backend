@@ -82,7 +82,7 @@ app = FastAPI(
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://admin.newbrindha.com/", "https://matrimony.newbrindha.com/", "https://newbrindha.com/", "https://backend.newbrindha.com/" ],
+    allow_origins=['https://admin.newbrindha.com', 'https://matrimony.newbrindha.com', 'https://newbrindha.com', 'https://backend.newbrindha.com'],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
