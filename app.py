@@ -15,44 +15,58 @@ from db.init_db import init_db
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Ensure all necessary directories exist (Done at top level for StaticFiles)
-settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-settings.PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
-settings.HOROSCOPES_DIR.mkdir(parents=True, exist_ok=True)
-(settings.UPLOAD_DIR / "admin_files").mkdir(parents=True, exist_ok=True)
-(settings.UPLOAD_DIR / "user_photos").mkdir(parents=True, exist_ok=True)
-(settings.UPLOAD_DIR / "frame_colors").mkdir(parents=True, exist_ok=True)
-(settings.UPLOAD_DIR / "profile_photos").mkdir(parents=True, exist_ok=True)
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize Database Tables
+    # 1. Initialize Database Tables FIRST
     try:
+        logger.info("Initializing database...")
         init_db()
+        logger.info("Database initialized successfully.")
     except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        # We continue to allow Firebase and other services to attempt initialization
-        # but the app will likely fail on DB requests.
+        logger.critical(f"CRITICAL: Failed to initialize database: {str(e)}")
+        # If DB fails, we can't really do much, but we try to continue
     
-    # Initialize Firebase
-    initialize_firebase()
-    
-    # Startup Database cleanup
-    conn = get_db_connection()
-    cur = conn.cursor()
+    # 2. Ensure all necessary directories exist
     try:
+        logger.info("Setting up local directories...")
+        settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        settings.PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+        settings.HOROSCOPES_DIR.mkdir(parents=True, exist_ok=True)
+        (settings.UPLOAD_DIR / "admin_files").mkdir(parents=True, exist_ok=True)
+        (settings.UPLOAD_DIR / "user_photos").mkdir(parents=True, exist_ok=True)
+        (settings.UPLOAD_DIR / "frame_colors").mkdir(parents=True, exist_ok=True)
+        (settings.UPLOAD_DIR / "profile_photos").mkdir(parents=True, exist_ok=True)
+        logger.info("Local directories verified.")
+    except Exception as e:
+        logger.error(f"Error creating directories: {str(e)}")
+
+    # 3. Initialize Firebase
+    try:
+        logger.info("Initializing Firebase...")
+        initialize_firebase()
+        logger.info("Firebase initialized.")
+    except Exception as e:
+        logger.error(f"Firebase initialization failed: {str(e)}")
+    
+    # 4. Startup Database cleanup
+    conn = None
+    cur = None
+    try:
+        logger.info("Performing startup cleanup...")
+        conn = get_db_connection()
+        cur = conn.cursor()
         # Delete expired refresh tokens (Photostudio)
         cur.execute("DELETE FROM refresh_tokens WHERE expires_at <= NOW()")
         # Delete expired refresh tokens (Matrimony)
         cur.execute("DELETE FROM matrimony_refresh_tokens WHERE expires_at <= NOW()")
         conn.commit()
-        logger.info("Expired refresh tokens cleaned up")
+        logger.info("Expired refresh tokens cleaned up.")
     except Exception as e:
-        conn.rollback()
+        if conn: conn.rollback()
         logger.error(f"Error cleaning up expired refresh tokens: {str(e)}")
     finally:
-        cur.close()
-        conn.close()
+        if cur: cur.close()
+        if conn: conn.close()
     
     yield
     # Shutdown
