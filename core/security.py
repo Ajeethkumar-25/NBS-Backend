@@ -5,14 +5,14 @@ from typing import Dict, Any, Optional
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from core.config import settings
 from db.session import get_db_connection
 from psycopg2.extras import DictCursor
 
 # Security
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+security_scheme = HTTPBearer()
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -49,7 +49,8 @@ def is_user_blocked(matrimony_id: str) -> bool:
         cur.close()
         conn.close()
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
+async def get_current_user(auth: HTTPAuthorizationCredentials = Depends(security_scheme)) -> Dict[str, Any]:
+    token = auth.credentials
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email = payload.get("sub")
@@ -80,7 +81,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> Dict[str, Any
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
 
-def get_current_user_matrimony(token: str) -> Dict[str, Any]:
+async def get_current_user_matrimony(auth: HTTPAuthorizationCredentials = Depends(security_scheme)) -> Dict[str, Any]:
+    token = auth.credentials
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id = payload.get("sub")
