@@ -1,4 +1,5 @@
 import random
+import traceback
 import psycopg2
 import psycopg2.extras
 from core.config import settings
@@ -23,12 +24,13 @@ def generate_matrimony_id():
         conn.commit()
         return formatted_id
     except Exception as e:
-        conn.rollback()
+        if 'conn' in locals() and conn: conn.rollback()
         logger.error(f"Error generating matrimony ID: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate matrimony ID: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 def send_push_notification(token: str, title: str, body: str):
     """
@@ -48,4 +50,5 @@ def send_push_notification(token: str, title: str, body: str):
         return {"message": "Notification sent successfully", "response": response}
     except Exception as e:
         logger.error(f"Error sending message: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to send notification: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")

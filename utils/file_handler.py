@@ -1,8 +1,11 @@
 import boto3
 import logging
+import traceback
 from botocore.exceptions import NoCredentialsError, ClientError
 from fastapi import UploadFile, HTTPException
 from core.config import settings
+
+logger = logging.getLogger(__name__)
 
 class FileHandler:
     def __init__(self):
@@ -52,14 +55,17 @@ class FileHandler:
             return file_url
 
         except NoCredentialsError:
-            logging.error("AWS credentials not found.")
+            logger.error("AWS credentials not found.")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail="Cloud storage configuration error")
         except ClientError as e:
-            logging.error(f"S3 Upload Error: {str(e)}")
+            logger.error(f"S3 Upload Error: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"S3 Upload failed: {str(e)}")
         except Exception as e:
             if isinstance(e, HTTPException): raise e
-            logging.error(f"Failed to upload {file.filename}: {str(e)}")
+            logger.error(f"Failed to upload {file.filename}: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
     def list_files(self, folder: str):
@@ -70,7 +76,8 @@ class FileHandler:
                 return [obj["Key"] for obj in response["Contents"]]
             return []
         except Exception as e:
-            logging.error(f"Error listing files in S3: {str(e)}")
+            logger.error(f"Error listing files in S3: {str(e)}")
+            logger.error(traceback.format_exc())
             return []
 
     def delete_file(self, file_url: str):
@@ -82,7 +89,8 @@ class FileHandler:
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
             logging.info(f"Deleted S3 object: {key}")
         except Exception as e:
-            logging.error(f"Failed to delete S3 file {file_url}: {str(e)}")
+            logger.error(f"Failed to delete S3 file {file_url}: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"Failed to delete file from S3: {str(e)}")
 
     def process_url(self, value, folder_name):

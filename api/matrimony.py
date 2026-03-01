@@ -196,13 +196,19 @@ async def register_matrimony(
         }
 
     except psycopg2.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Database error in matrimony registration: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal database error")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Unexpected error in matrimony registration: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        if 'cur' in locals():
+        if 'cur' in locals() and cur:
             cur.close()
-        if 'conn' in locals():
+        if 'conn' in locals() and conn:
             conn.close()
 
 @router.post("/login", response_model=MatrimonyToken)
@@ -262,15 +268,16 @@ async def login_matrimony(request: MatrimonyLoginRequest):
 
         return MatrimonyToken(access_token=access_token, refresh_token=refresh_token, token_type="bearer", matrimony_id=request.matrimony_id)
 
-    except HTTPException as e:
-        raise e
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"Login error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        logger.error(f"Error in matrimony login for ID {request.matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        if 'cur' in locals():
+        if 'cur' in locals() and cur:
             cur.close()
-        if 'conn' in locals():
+        if 'conn' in locals() and conn:
             conn.close()
 
 @router.get("/lastMatrimonyId")
@@ -565,12 +572,17 @@ async def get_matrimony_profiles(
             "Default Profiles": default_profiles
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Server error while fetching profiles.")
+        logger.error(f"Error fetching matrimony profiles: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error while fetching profiles")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur:
+            cur.close()
+        if 'conn' in locals() and conn:
+            conn.close()
 
 @router.get("/preference")
 async def get_matrimony_preferences(current_user: Dict[str, Any] = Depends(get_current_user_matrimony)):
@@ -607,12 +619,17 @@ async def get_matrimony_preferences(current_user: Dict[str, Any] = Depends(get_c
                 matches.append(c)
         
         return {"message": f"Found {len(matches)} matches", "profiles": matches}
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"Preference error: {e}")
-        raise HTTPException(status_code=500, detail="Server error")
+        logger.error(f"Error fetching matrimony preferences for user {current_user.get('matrimony_id')}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur:
+            cur.close()
+        if 'conn' in locals() and conn:
+            conn.close()
 
 # overall admin view preference, location, caste preference
 @router.get("/admin/preference-overview", response_model=Dict[str, Any])
@@ -1054,15 +1071,24 @@ async def delete_profile_by_id(
             raise HTTPException(status_code=404, detail="Profile not found")
 
         conn.commit()
+        logger.info(f"Profile {matrimony_id} deleted by {current_user.get('matrimony_id') or current_user.get('email')}")
         return {"status": "success", "message": f"Profile with ID {matrimony_id} deleted"}
 
+    except HTTPException:
+        raise
     except psycopg2.Error as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Database error deleting profile {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal database error")
+    except Exception as e:
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Unexpected error deleting profile {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        if 'cur' in locals(): cur.close()
-        if 'conn' in locals(): conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/my_profiles/activate")
 async def set_profile_active_status(
@@ -1086,13 +1112,18 @@ async def set_profile_active_status(
         if not updated_status:
             raise HTTPException(status_code=404, detail="Profile not found")
 
+        logger.info(f"Profile {matrimony_id} active status set to {is_active}")
         return {"status": "success", "is_active": updated_status[0]}
+    except HTTPException:
+        raise
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error setting profile active status for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/my_profiles/activate")
 async def get_profile_active_status(current_user: dict = Depends(get_current_user_matrimony)):
@@ -1105,9 +1136,15 @@ async def get_profile_active_status(current_user: dict = Depends(get_current_use
         if not status_row:
             raise HTTPException(status_code=404, detail="Profile not found")
         return {"is_active": status_row[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching profile active status for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/admin/delete-profiles")
 async def delete_profiles_by_admin(
@@ -1126,6 +1163,7 @@ async def delete_profiles_by_admin(
         # Let's assume there is a deleted_profiles table.
         
         deleted_count = 0
+        deleted_log_ids = []
         for m_id in matrimony_ids:
             cur.execute("SELECT * FROM matrimony_profiles WHERE matrimony_id = %s", (m_id,))
             profile = cur.fetchone()
@@ -1139,15 +1177,19 @@ async def delete_profiles_by_admin(
                 # Delete from matrimony_profiles
                 cur.execute("DELETE FROM matrimony_profiles WHERE matrimony_id = %s", (m_id,))
                 deleted_count += 1
+                deleted_log_ids.append(m_id)
         
         conn.commit()
+        logger.info(f"Admin {current_user.get('id')} deleted {deleted_count} profiles: {deleted_log_ids}")
         return {"status": "success", "message": f"{deleted_count} profiles deleted by admin"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in admin profiles deletion: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/admin/deleted-profiles-list")
 async def get_deleted_profiles_by_admin(current_user: dict = Depends(get_current_user)):
@@ -1160,9 +1202,13 @@ async def get_deleted_profiles_by_admin(current_user: dict = Depends(get_current
         cur.execute("SELECT * FROM deleted_profiles ORDER BY id DESC")
         profiles = cur.fetchall()
         return {"status": "success", "deleted_profiles": profiles}
+    except Exception as e:
+        logger.error(f"Error fetching deleted profiles list: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/user/deactivate-report")
 async def report_deactivation(
@@ -1179,11 +1225,13 @@ async def report_deactivation(
         conn.commit()
         return {"status": "success", "message": "Deactivation report submitted"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in deactivation report for {report.matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/admin/deactivate-report")
 async def get_deactivation_reports(current_user: dict = Depends(get_current_user)):
@@ -1192,13 +1240,17 @@ async def get_deactivation_reports(current_user: dict = Depends(get_current_user
 
     try:
         conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur = conn.cursor(cursor_factory=DictCursor)
         cur.execute("SELECT * FROM deactivation_reports ORDER BY id DESC")
         reports = cur.fetchall()
         return {"status": "success", "reports": reports}
+    except Exception as e:
+        logger.error(f"Error fetching deactivation reports: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 # Wallet endpoints
 @router.post("/wallet/recharge")
@@ -1216,13 +1268,16 @@ async def recharge_wallet(
         )
         new_balance = cur.fetchone()[0]
         conn.commit()
+        logger.info(f"Wallet recharge for {matrimony_id}: +{points} points, new balance: {new_balance}")
         return {"status": "success", "new_balance": new_balance}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in wallet recharge for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/wallet/spend")
 async def spend_points_from_user_wallet(
@@ -1258,11 +1313,13 @@ async def spend_points_from_user_wallet(
     except HTTPException:
         raise
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in wallet spend for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/wallet/spend/latest")
 async def get_latest_spends(current_user: dict = Depends(get_current_user_matrimony)):
@@ -1276,9 +1333,13 @@ async def get_latest_spends(current_user: dict = Depends(get_current_user_matrim
         )
         spends = cur.fetchall()
         return {"status": "success", "latest_spends": spends}
+    except Exception as e:
+        logger.error(f"Error fetching latest spends for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/wallet/spend-history")
 async def get_spend_history(current_user: dict = Depends(get_current_user_matrimony)):
@@ -1292,9 +1353,13 @@ async def get_spend_history(current_user: dict = Depends(get_current_user_matrim
         )
         history = cur.fetchall()
         return {"status": "success", "spend_history": history}
+    except Exception as e:
+        logger.error(f"Error fetching spend history for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/wallet/balance")
 async def get_wallet_balance(current_user: dict = Depends(get_current_user_matrimony)):
@@ -1306,9 +1371,13 @@ async def get_wallet_balance(current_user: dict = Depends(get_current_user_matri
         row = cur.fetchone()
         balance = row[0] if row else 0
         return {"status": "success", "balance": balance}
+    except Exception as e:
+        logger.error(f"Error fetching wallet balance for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/favorite-profiles")
 async def favorite_profiles(
@@ -1337,11 +1406,13 @@ async def favorite_profiles(
         conn.commit()
         return {"status": "success", "message": "Favorite profiles updated"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error updating favorite profiles for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/get-favorite-profiles")
 async def get_favorite_profiles(current_user: dict = Depends(get_current_user_matrimony)):
@@ -1357,9 +1428,13 @@ async def get_favorite_profiles(current_user: dict = Depends(get_current_user_ma
         """, (matrimony_id,))
         favorites = cur.fetchall()
         return {"status": "success", "favorite_profiles": favorites}
+    except Exception as e:
+        logger.error(f"Error fetching favorite profiles for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/verify-email")
 async def verify_email(
@@ -1373,13 +1448,18 @@ async def verify_email(
         conn.commit()
         if not updated:
             raise HTTPException(status_code=404, detail="Email not found")
+        logger.info(f"Email verified for {request.email}")
         return {"status": "success", "message": "Email verified successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in email verification for {request.email}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/forgot-password")
 async def forgot_password(
@@ -1397,13 +1477,18 @@ async def forgot_password(
         conn.commit()
         if not updated:
             raise HTTPException(status_code=404, detail="Email not found")
+        logger.info(f"Password reset for {request.email}")
         return {"status": "success", "message": "Password reset successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in forgot password for {request.email}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 # Chat endpoints
 @router.post("/chat/user-to-admin")
@@ -1421,11 +1506,13 @@ async def user_to_admin_chat(
         conn.commit()
         return {"status": "success", "message": "Message sent to admin"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in user-to-admin chat for user {request.sender_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/chat/admin-to-user")
 async def admin_to_user_chat(
@@ -1443,13 +1530,16 @@ async def admin_to_user_chat(
             ("admin", request.receiver_id, request.message)
         )
         conn.commit()
+        logger.info(f"Admin message sent to user {request.receiver_id}")
         return {"status": "success", "message": f"Message sent to user {request.receiver_id}"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in admin-to-user chat for user {request.receiver_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/chat/admin/all-messages", response_model=List[AdminChatMessage])
 async def get_all_admin_messages(current_user: dict = Depends(get_current_user)):
@@ -1462,9 +1552,13 @@ async def get_all_admin_messages(current_user: dict = Depends(get_current_user))
         cur.execute("SELECT * FROM chat_messages ORDER BY timestamp DESC")
         messages = cur.fetchall()
         return messages
+    except Exception as e:
+        logger.error(f"Error fetching all admin messages: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/chat/admin/messages")
 async def get_chat_messages(
@@ -1483,9 +1577,13 @@ async def get_chat_messages(
             cur.execute("SELECT * FROM chat_messages ORDER BY timestamp ASC")
         messages = cur.fetchall()
         return {"status": "success", "messages": messages}
+    except Exception as e:
+        logger.error(f"Error fetching chat messages for user {user_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 # Reporting and Blocking
 @router.post("/user/report")
@@ -1504,11 +1602,13 @@ async def report_user(
         conn.commit()
         return {"status": "success", "message": "User reported successfully"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error reporting user {report.reported_matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/admin/reported-profiles")
 async def get_reported_profiles(current_user: dict = Depends(get_current_user)):
@@ -1521,9 +1621,13 @@ async def get_reported_profiles(current_user: dict = Depends(get_current_user)):
         cur.execute("SELECT * FROM reported_profiles ORDER BY reported_at DESC")
         reports = cur.fetchall()
         return {"status": "success", "reported_profiles": reports}
+    except Exception as e:
+        logger.error(f"Error fetching reported profiles: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/admin/block-user")
 async def block_user(
@@ -1541,13 +1645,16 @@ async def block_user(
             (block.matrimony_id, block.reason, block.reason)
         )
         conn.commit()
+        logger.info(f"Admin {current_user['id']} blocked user {block.matrimony_id}")
         return {"status": "success", "message": f"User {block.matrimony_id} blocked"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error blocking user {block.matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.post("/admin/unblock-user")
 async def unblock_user(
@@ -1563,13 +1670,16 @@ async def unblock_user(
         for m_id in unblock.matrimony_id:
             cur.execute("UPDATE blocked_users SET is_blocked = FALSE WHERE blocked_matrimony_id = %s", (m_id,))
         conn.commit()
+        logger.info(f"Admin {current_user.get('id')} unblocked users: {unblock.matrimony_id}")
         return {"status": "success", "message": "Users unblocked successfully"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error unblocking users: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/admin/blocked-users")
 async def get_blocked_users(current_user: dict = Depends(get_current_user)):
@@ -1582,9 +1692,13 @@ async def get_blocked_users(current_user: dict = Depends(get_current_user)):
         cur.execute("SELECT * FROM blocked_users WHERE is_blocked = TRUE ORDER BY blocked_at DESC")
         blocked = cur.fetchall()
         return {"status": "success", "blocked_users": blocked}
+    except Exception as e:
+        logger.error(f"Error fetching blocked users: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 # Contact Us
 @router.post("/contact-us", response_model=ContactUsResponse)
@@ -1601,11 +1715,13 @@ async def create_contact_us(contact: ContactUsCreate):
         conn.commit()
         return new_contact
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in create_contact_us: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/admin/contact-us", response_model=List[ContactUsResponse])
 async def get_contact_us_messages(current_user: dict = Depends(get_current_user)):
@@ -1618,9 +1734,13 @@ async def get_contact_us_messages(current_user: dict = Depends(get_current_user)
         cur.execute("SELECT * FROM contact_us ORDER BY created_at DESC")
         messages = cur.fetchall()
         return messages
+    except Exception as e:
+        logger.error(f"Error fetching contact us messages: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 # Dashboard
 @router.get("/admin/dashboards/overview")
@@ -1650,9 +1770,13 @@ async def get_matrimony_admin_dashboard_overview(current_user: dict = Depends(ge
             "pending_verifications": pending_verifications,
             "total_reports": total_reports
         }
+    except Exception as e:
+        logger.error(f"Error fetching admin dashboard overview: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 # Profile Verification
 @router.post("/admin/profile/verify")
@@ -1675,13 +1799,18 @@ async def verify_profile_admin(
         conn.commit()
         if not updated:
             raise HTTPException(status_code=404, detail="Profile not found")
+        logger.info(f"Admin {current_user['id']} updated verification for {update.matrimony_id} to {update.verification_status}")
         return {"status": "success", "message": f"Profile {update.matrimony_id} verification updated to {update.verification_status}"}
+    except HTTPException:
+        raise
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error in admin profile verification for {update.matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/admin/profiles/unverified", response_model=AdminProfileVerificationSummary)
 async def get_unverified_profiles(current_user: dict = Depends(get_current_user)):
@@ -1706,9 +1835,13 @@ async def get_unverified_profiles(current_user: dict = Depends(get_current_user)
             "approved_count": approved_count,
             "profiles": [dict(p) for p in profiles]
         }
+    except Exception as e:
+        logger.error(f"Error fetching unverified profiles: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.put("/admin/profiles/verify")
 async def update_profile_status_admin(
@@ -1735,11 +1868,13 @@ async def mark_viewed(
         conn.commit()
         return {"status": "success", "message": "Profiles marked as viewed"}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Error marking profiles viewed for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
 
 @router.get("/viewed-profiles", response_model=ViewedProfilesResponse)
 async def viewed_profiles_list(current_user: dict = Depends(get_current_user_matrimony)):
@@ -1755,6 +1890,10 @@ async def viewed_profiles_list(current_user: dict = Depends(get_current_user_mat
             "viewer_id": matrimony_id,
             "viewed_profiles": viewed_ids
         }
+    except Exception as e:
+        logger.error(f"Error fetching viewed profiles list for {matrimony_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()

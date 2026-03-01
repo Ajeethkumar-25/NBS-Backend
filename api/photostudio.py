@@ -8,7 +8,7 @@ import traceback
 from googletrans import Translator
 from core.config import settings
 from db.session import get_db_connection
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from core.security import (
     get_current_user, create_access_token, create_refresh_token, verify_password, get_password_hash
 )
@@ -35,13 +35,16 @@ async def register(user: UserCreate):
         )
         user_id = cur.fetchone()[0]
         conn.commit()
+        logger.info(f"New admin registered: {user.email}")
         return {"message": "Registration successful", "user_id": user_id}
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Error in admin register: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.post("/admin/login", response_model=Token)
 async def login(user: UserLogin):
@@ -67,10 +70,11 @@ async def login(user: UserLogin):
         
         cur.execute(
             "INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (%s, %s, %s)",
-            (refresh_token, db_user[0], datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS))
+            (refresh_token, db_user[0], datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS))
         )
         conn.commit()
         
+        logger.info(f"Admin logged in: {user.email}")
         return {
             "message": "Login successful",
             "access_token": access_token,
@@ -79,12 +83,16 @@ async def login(user: UserLogin):
             "email": db_user[1],
             "user_type": db_user[3]
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Error in admin login: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.post("/user/eventform", response_model=Dict[str, Any])
 async def create_event_form(event: EventForm):
@@ -97,16 +105,19 @@ async def create_event_form(event: EventForm):
         )
         event_id = cur.fetchone()[0]
         conn.commit()
+        logger.info(f"Event form submitted: {event.name}")
         return {
             "message": f"{event.name},{event.event_date},{event.event_time},{event.event_type} Event form submitted successfully",
             "event_id": event_id
         }
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Error creating event form: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.get("/admin/eventform", response_model=List[Dict[str, Any]])
 async def get_event_forms():
@@ -119,10 +130,12 @@ async def get_event_forms():
             row["message"] = f"{row['name']}, {row['event_date']}, {row['event_time']}, {row['event_type']} Event form submitted successfully"
         return [dict(row) for row in rows]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error retrieving event forms: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.post("/refresh-token", response_model=Token)
 async def refresh_token(token: RefreshToken):
@@ -169,15 +182,17 @@ async def admin_upload_files(
     cur = conn.cursor()
 
     try:
-        logging.info(f"Received {len(files)} files")
+        logger.info(f"Received {len(files)} files for upload in category: {category}")
 
         for file in files:
             try:
                 file_url = file_handler.upload_file(file, "admin_files")
                 if not file_url:
+                    logger.warning(f"File upload failed for {file.filename}")
                     continue
             except Exception as e:
-                logging.error(f"Upload Error: {e}")
+                logger.error(f"S3 Upload Error for {file.filename}: {str(e)}")
+                logger.error(traceback.format_exc())
                 continue
             
             file_type = file.content_type  
@@ -193,6 +208,7 @@ async def admin_upload_files(
                 file_id = cur.fetchone()
                 
                 if not file_id:
+                    logger.warning(f"Failed to get file ID for {file.filename} after DB insert")
                     continue
 
                 uploaded_files.append({
@@ -205,28 +221,35 @@ async def admin_upload_files(
                 })
 
             except psycopg2.Error as e:
-                conn.rollback()
-                logging.error(f"Database Error for {file.filename}: {str(e)}")
+                if 'conn' in locals(): conn.rollback()
+                logger.error(f"Database Error for {file.filename}: {str(e)}")
+                logger.error(traceback.format_exc())
                 continue
 
         conn.commit()
 
         if not uploaded_files:
+            logger.warning("No files were successfully uploaded")
             raise HTTPException(status_code=500, detail="No files were uploaded successfully")
 
+        logger.info(f"Successfully uploaded {len(uploaded_files)} files to category: {category}")
         return {
             "message": "Files uploaded successfully by admin",
             "file_urls": [file["file_url"] for file in uploaded_files],
             "uploaded_files": uploaded_files
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Unexpected error in admin file upload: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
 
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.get("/user/fileupload", response_model=List[Dict[str, Any]])
 async def get_uploaded_files(
@@ -270,11 +293,15 @@ async def get_uploaded_files(
         ]
         
         return uploaded_files
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve files: {str(e)}")
+        logger.error(f"Error retrieving files for category {category}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.post("/admin/private/fileupload", response_model=Dict[str, Any])
 async def admin_upload_private_files(
@@ -283,12 +310,14 @@ async def admin_upload_private_files(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     if current_user.get("user_type") != "user":
+        logger.warning(f"Unauthorized private upload attempt by user type: {current_user.get('user_type')}")
         raise HTTPException(status_code=403, detail="Only user can access this endpoint")
 
     conn = get_db_connection()
     cur = conn.cursor()
 
     try:
+        logger.info(f"Received {len(files)} private files for category: {category} from user: {current_user['id']}")
         cur.execute(
             "SELECT private_files_id FROM private_files WHERE uploaded_by = %s AND category = %s",
             (current_user["id"], category)
@@ -330,13 +359,16 @@ async def admin_upload_private_files(
                 })
 
             except Exception as e:
-                logging.error(f"Upload Error for {file.filename}: {e}")
-        
+                logger.error(f"Upload Error for {file.filename}: {str(e)}")
+                logger.error(traceback.format_exc())
+            
         if not uploaded_file_info:
+            logger.warning("No private files were uploaded successfully")
             raise HTTPException(status_code=400, detail="No files were uploaded successfully")
 
         conn.commit()
 
+        logger.info(f"Successfully uploaded {len(uploaded_file_info)} private files for category: {category}")
         return {
             "message": "Files uploaded successfully by admin",
             "private_files_id": private_files_id,
@@ -345,13 +377,16 @@ async def admin_upload_private_files(
             "uploaded_files": uploaded_file_info
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        conn.rollback()
-        logging.error(f"[ERROR] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Unexpected error in private file upload: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.get("/admin/private/get_files", response_model=Dict[str, Any])
 async def get_user_uploaded_files(
@@ -415,12 +450,15 @@ async def get_user_uploaded_files(
             "uploaded_files": all_files_data
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"[GET Error] {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve uploaded files")
+        logger.error(f"Error retrieving uploaded files for user {user_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.put("/admin/private/fileupdate", response_model=Dict[str, Any])
 async def update_uploaded_file(
@@ -471,12 +509,15 @@ async def update_uploaded_file(
             }
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"[PUT Error] {str(e)}")
-        raise HTTPException(status_code=500, detail="Error while validating file access")
+        logger.error(f"Error updating uploaded file {request_data.file_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.delete("/admin/private/filedelete", response_model=Dict[str, Any])
 async def delete_uploaded_file(
@@ -566,11 +607,13 @@ async def delete_files_by_private_id(
         }
 
     except Exception as e:
-        logging.error(f"[DELETE by private_files_id Error] {str(e)}")
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Error deleting files by private_id {private_files_id}: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail="Failed to delete files")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.post("/user/private/select-files", response_model=Dict[str, Any])
 async def user_select_files(request: FileSelectionsRequest):
@@ -625,12 +668,13 @@ async def user_select_files(request: FileSelectionsRequest):
         }
 
     except Exception as e:
-        conn.rollback()
-        logging.error(f"Error updating selections: {e}")
-        raise HTTPException(status_code=500, detail=f"Something went wrong while saving your selection: {str(e)}")
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Error updating user selections: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.get("/user/private/get_select_files", response_model=Dict[str, Any])
 async def user_get_all_selected_files(user_id: int = Query(...)):
@@ -668,11 +712,12 @@ async def user_get_all_selected_files(user_id: int = Query(...)):
         }
 
     except Exception as e:
-        logging.error(f"Error fetching file selections: {e}")
-        raise HTTPException(status_code=500, detail=f"Something went wrong while fetching the selections: {str(e)}")
+        logger.error(f"Error fetching file selections for user {user_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.get("/admin/private/unselected-files", response_model=Dict[str, Any])
 async def admin_get_unselected_files(user_id: int):
@@ -722,11 +767,12 @@ async def admin_get_unselected_files(user_id: int):
         }
 
     except Exception as e:
-        logging.error(f"Error fetching unselected files: {e}")
+        logger.error(f"Error fetching unselected files for user {user_id}: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail="Failed to fetch unselected files")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.post("/admin/product_frame", response_model=Dict[str, Any])
 async def create_admin_product_frame(
@@ -772,11 +818,13 @@ async def create_admin_product_frame(
         }
 
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Error creating admin product frame: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @router.post("/user/product_frame")
 async def create_product_frame(
@@ -815,9 +863,11 @@ async def create_product_frame(
         }
 
     except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        if 'conn' in locals(): conn.rollback()
+        logger.error(f"Error creating product frame: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error")
 
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()

@@ -1,4 +1,5 @@
 import logging
+import traceback
 import psycopg2
 from db.session import get_db_connection
 
@@ -286,9 +287,13 @@ def init_db():
         print("[✓] Database initialized successfully with all tables.")
         logger.info("Database initialized successfully with all tables.")
     except Exception as e:
-        conn.rollback()
+        if 'conn' in locals() and conn:
+            conn.rollback()
         logger.error(f"Database initialization failed: {str(e)}")
+        logger.error(traceback.format_exc())
         raise e
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals() and cur:
+            cur.close()
+        if 'conn' in locals() and conn:
+            conn.close()

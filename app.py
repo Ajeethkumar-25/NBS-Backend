@@ -1,4 +1,5 @@
 import logging
+import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,7 +38,8 @@ try:
     print("="*50 + "\n")
 except Exception as e:
     print(f"\n[!] CRITICAL STARTUP ERROR: {str(e)}")
-    logging.critical(f"Startup Error: {e}")
+    logger.critical(f"Startup Error: {e}")
+    logger.critical(traceback.format_exc())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -59,11 +61,12 @@ async def lifespan(app: FastAPI):
         conn.commit()
         logger.info("Expired refresh tokens cleaned up.")
     except Exception as e:
-        if conn: conn.rollback()
+        if 'conn' in locals() and conn: conn.rollback()
         logger.error(f"Error cleaning up expired refresh tokens: {str(e)}")
+        logger.error(traceback.format_exc())
     finally:
-        if cur: cur.close()
-        if conn: conn.close()
+        if 'cur' in locals() and cur: cur.close()
+        if 'conn' in locals() and conn: conn.close()
     
     yield
     # Shutdown
