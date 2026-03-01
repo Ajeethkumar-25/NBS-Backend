@@ -15,14 +15,12 @@ class Settings:
     REFRESH_TOKEN_EXPIRE_DAYS = 7
     OTP_EXPIRE_MINUTES = 5
     
-    if platform.system() == "Windows":
-        UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads"))
-        PHOTOS_DIR = Path(os.getenv("PHOTOS_DIR", "myapp/uploaded_photos"))
-        HOROSCOPES_DIR = Path(os.getenv("HOROSCOPES_DIR", "myapp/uploaded_horoscopes"))
-    else:
-        UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/home/ubuntu/uploads"))
-        PHOTOS_DIR = Path(os.getenv("PHOTOS_DIR", "/home/ubuntu/myapp/uploaded_photos"))
-        HOROSCOPES_DIR = Path(os.getenv("HOROSCOPES_DIR", "/home/ubuntu/myapp/uploaded_horoscopes"))
+    # Base Directory (Project Root)
+    BASE_DIR = Path(__file__).resolve().parent.parent
+
+    UPLOAD_DIR = BASE_DIR / os.getenv("UPLOAD_DIR", "uploads")
+    PHOTOS_DIR = BASE_DIR / os.getenv("PHOTOS_DIR", "myapp/uploaded_photos")
+    HOROSCOPES_DIR = BASE_DIR / os.getenv("HOROSCOPES_DIR", "myapp/uploaded_horoscopes")
     
     DB_CONFIG = {
         "dbname": os.getenv("dbname"),
