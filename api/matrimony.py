@@ -110,7 +110,7 @@ async def register_matrimony(
             try:
                 photo_url = file_handler.upload_file(photo, "profile_photos")
             except Exception as e:
-                logging.error(f"Profile photo upload failed: {str(e)}")
+                logger.error(f"Profile photo upload failed: {str(e)}")
                 raise HTTPException(status_code=400, detail="Profile photo upload failed")
 
         # Handle multiple photos
@@ -121,7 +121,7 @@ async def register_matrimony(
                     url = file_handler.upload_file(p, "photos")
                     photos_urls.append(url)
                 except Exception as e:
-                    logging.error(f"Photo upload failed: {str(e)}")
+                    logger.error(f"Photo upload failed: {str(e)}")
                     continue
 
         # Handle horoscope documents
@@ -132,7 +132,7 @@ async def register_matrimony(
                     url = file_handler.upload_file(h, "horoscopes")
                     horoscope_urls.append(url)
                 except Exception as e:
-                    logging.error(f"Horoscope upload failed: {str(e)}")
+                    logger.error(f"Horoscope upload failed: {str(e)}")
                     continue
 
         def format_array(urls):
@@ -331,7 +331,7 @@ async def send_otp(request: OTPRequest):
         """, (request.mobile_number, request.full_name, otp, expires_at))
         conn.commit()
 
-        logging.info(f"[DEV LOG] OTP for {request.mobile_number}: {otp}")
+        logger.info(f"[DEV LOG] OTP for {request.mobile_number}: {otp}")
 
         return {"message": "OTP generated and saved", "mobile_number": request.mobile_number}
     except Exception as e:
@@ -403,7 +403,7 @@ async def matrimony_refresh_token(token: RefreshTokenRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logging.error(f"Refresh token error: {e}")
+        logger.error(f"Refresh token error: {e}")
         raise HTTPException(status_code=500, detail="Unexpected server error")
     finally:
         if cur:

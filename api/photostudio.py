@@ -6,6 +6,9 @@ import logging
 import json
 import traceback
 from googletrans import Translator
+
+logger = logging.getLogger(__name__)
+
 from core.config import settings
 from db.session import get_db_connection
 from datetime import datetime, timedelta, timezone

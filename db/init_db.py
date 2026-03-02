@@ -149,7 +149,11 @@ def init_db():
             blood_group VARCHAR(20),
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             is_verified BOOLEAN DEFAULT FALSE,
-            is_active BOOLEAN DEFAULT TRUE
+            is_active BOOLEAN DEFAULT TRUE,
+            verification_status VARCHAR(50) DEFAULT 'pending',
+            verification_comment TEXT,
+            is_email_verified BOOLEAN DEFAULT FALSE,
+            id SERIAL
         );
         """,
         # 9. Blocked users
@@ -166,7 +170,7 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS matrimony_refresh_tokens (
             id SERIAL PRIMARY KEY,
-            matrimony_id VARCHAR(50) UNIQUE REFERENCES matrimony_profiles(matrimony_id) ON DELETE CASCADE,
+            matrimony_id VARCHAR(50) REFERENCES matrimony_profiles(matrimony_id) ON DELETE CASCADE,
             token TEXT UNIQUE NOT NULL,
             expires_at TIMESTAMP NOT NULL,
             is_valid BOOLEAN DEFAULT TRUE,
@@ -283,9 +287,44 @@ def init_db():
     try:
         for command in commands:
             cur.execute(command)
+        
+        # --- Column Migration Logic ---
+        # Ensure new columns are added to existing tables
+        migrations = [
+            ("matrimony_profiles", [
+                ("verification_status", "VARCHAR(50) DEFAULT 'pending'"),
+                ("verification_comment", "TEXT"),
+                ("is_email_verified", "BOOLEAN DEFAULT FALSE"),
+                ("id", "SERIAL")
+            ]),
+            ("deleted_profiles", [
+                ("verification_status", "VARCHAR(50) DEFAULT 'pending'"),
+                ("verification_comment", "TEXT"),
+                ("is_email_verified", "BOOLEAN DEFAULT FALSE"),
+                ("id", "SERIAL")
+            ]),
+            ("matrimony_refresh_tokens", [
+                ("is_valid", "BOOLEAN DEFAULT TRUE")
+            ]),
+            ("spend_actions", [
+                ("matrimony_id", "VARCHAR(50) REFERENCES matrimony_profiles(matrimony_id)")
+            ])
+        ]
+        
+        for table, cols in migrations:
+            # Check if table exists
+            cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)", (table,))
+            if cur.fetchone()[0]:
+                for col_name, col_def in cols:
+                    try:
+                        cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
+                        logger.info(f"Ensured column {col_name} exists in {table}")
+                    except Exception as e:
+                        logger.warning(f"Could not add column {col_name} to {table}: {e}")
+
         conn.commit()
-        print("[✓] Database initialized successfully with all tables.")
-        logger.info("Database initialized successfully with all tables.")
+        print("[✓] Database initialized and migrated successfully.")
+        logger.info("Database initialized and migrated successfully.")
     except Exception as e:
         if 'conn' in locals() and conn:
             conn.rollback()
